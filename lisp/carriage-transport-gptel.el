@@ -79,6 +79,12 @@ by the user policy \"reliability over isolation\", and MUST be logged."
   :type 'boolean
   :group 'carriage-transport-gptel)
 
+(defcustom carriage-transport-gptel-result-include-model nil
+  "When non-nil, include :CAR_MODEL into #+CARRIAGE_RESULT.
+Default is nil to avoid duplication with FINGERPRINT and reduce UI drift."
+  :type 'boolean
+  :group 'carriage-transport-gptel)
+
 ;; ---------------------------------------------------------------------
 ;; Utilities
 
@@ -235,6 +241,53 @@ Returns number of removed entries (best-effort)."
   "Run FN after DELAY seconds (best-effort)."
   (run-at-time (max 0 (or delay 0)) nil fn))
 
+;; Pricing helper: compute and log detailed status in one place.
+(defun carriage-transport-gptel--pricing-compute-and-log (origin-buffer model-str usage)
+  "Compute pricing best-effort and log a single 'pricing:' line indicating status.
+Returns COST plist (or nil) with keys like :cost-total-u."
+  (let ((cost nil)
+        (canon (and (stringp model-str) (concat "gptel:" model-str))))
+    (cond
+     ;; No model string — log skip with usage snapshot
+     ((not (stringp model-str))
+      (carriage-log "pricing: skip reason=no-model usage-in=%s usage-out=%s"
+                    (or (plist-get usage :tokens-in) "—")
+                    (or (plist-get usage :tokens-out) "—")))
+     ;; Pricing system not available
+     ((not (require 'carriage-pricing nil t))
+      (carriage-log "pricing: skip reason=require-failed model=%s" (or canon "")))
+     (t
+      ;; Try loading table and computing cost; log any errors explicitly.
+      (let* ((table nil)
+             (table-ok nil))
+        (condition-case e
+            (progn
+              (setq table (carriage-pricing-load-table
+                           (with-current-buffer origin-buffer default-directory)))
+              (setq table-ok t))
+          (error
+           (carriage-log "pricing: table-error model=%s err=%s"
+                         canon (carriage-transport-gptel--snip e 200))))
+        (when table-ok
+          (condition-case e2
+              (setq cost (carriage-pricing-compute canon usage table))
+            (error
+             (carriage-log "pricing: compute-error model=%s err=%s"
+                           canon (carriage-transport-gptel--snip e2 200))))
+          (let* ((tin (plist-get usage :tokens-in))
+                 (tout (plist-get usage :tokens-out))
+                 (ci  (and cost (plist-get cost :cost-in-u)))
+                 (co  (and cost (plist-get cost :cost-out-u)))
+                 (cai (and cost (plist-get cost :cost-audio-in-u)))
+                 (cao (and cost (plist-get cost :cost-audio-out-u)))
+                 (tt  (and cost (plist-get cost :cost-total-u)))
+                 (rub (and (integerp tt) (/ tt 1000000.0))))
+            (carriage-log "pricing: model=%s known=%s tokens-in=%s tokens-out=%s audio-in=%s audio-out=%s total-u=%s total=%s"
+                          canon (if (and cost (integerp tt)) "t" "nil")
+                          (or tin "—") (or tout "—") (or cai "—") (or cao "—")
+                          (or tt "—") (if rub (format "₽%.2f" rub) "—")))))))
+    cost))
+
 ;; ---------------------------------------------------------------------
 ;; Watchdog / finalization guards (buffer-local)
 
@@ -263,22 +316,6 @@ Starts as startup timeout, then may be extended after first stream content arriv
   "Record activity timestamp."
   (setq carriage-transport-gptel--wd-last-activity (float-time)))
 
-(defun carriage-transport-gptel--wd-extended-timeout ()
-  "Return silence timeout (seconds) to use after first stream content arrives.
-
-Policy: keep only one user-facing knob (`carriage-transport-gptel-timeout-seconds`)
-as the startup timeout, but never let the silence timeout drop below 60s to avoid
-aborting valid long generations."
-  (max (float (or carriage-transport-gptel-timeout-seconds 10)) 60.0))
-
-(defun carriage-transport-gptel--wd-extend ()
-  "Extend watchdog timeout after first stream content arrives (idempotent)."
-  (unless carriage-transport-gptel--wd-extended
-    (setq carriage-transport-gptel--wd-extended t
-          carriage-transport-gptel--wd-timeout (carriage-transport-gptel--wd-extended-timeout))
-    (when carriage-transport-gptel-diagnostics
-      (carriage-log "Transport[gptel] WD: extend silence-timeout=%.3fs"
-                    carriage-transport-gptel--wd-timeout))))
 
 (defun carriage-transport-gptel--wd-extended-timeout ()
   "Return silence timeout (seconds) to use after first stream content arrives.
@@ -420,40 +457,109 @@ It MUST be idempotent."
             (_     (carriage-stream-finalize t nil))))
         (carriage-transport-complete (memq final '(abort error timeout)) origin-buffer)
         ;; Record result line with usage/model/cost for doc-cost aggregation
+        ;; Pre-log pricing to ensure visibility even if later block errors out early.
+        ;; We log with whatever model is known and no usage; the main block below will
+        ;; still compute full usage/cost and may log another 'pricing:' line.
+        (let* ((mdl-raw (and (listp info) (plist-get info :model)))
+               (model-str (and mdl-raw (format "%s" mdl-raw))))
+          (ignore-errors
+            (carriage-transport-gptel--pricing-compute-and-log origin-buffer model-str nil)))
         (ignore-errors
           (let* ((mdl-raw (and (listp info) (plist-get info :model)))
                  (model-str (and mdl-raw (format "%s" mdl-raw)))
-                 ;; Robust token extraction: consider multiple possible INFO keys and sanitize to integers
-                 (raw-out (and (listp info)
-                               (or (plist-get info :output-tokens)
-                                   (plist-get info :completion-tokens)
-                                   (plist-get info :tokens-out)
-                                   (let ((u (plist-get info :usage)))
-                                     (and (listp u)
-                                          (or (plist-get u :output-tokens)
-                                              (plist-get u :completion-tokens)))))))
-                 (raw-in  (and (listp info)
-                               (or (plist-get info :input-tokens)
-                                   (plist-get info :prompt-tokens)
-                                   (plist-get info :tokens-in)
-                                   (let ((u (plist-get info :usage)))
-                                     (and (listp u)
-                                          (or (plist-get u :input-tokens)
-                                              (plist-get u :prompt-tokens)))))))
+                 ;; Robust token extraction: consider multiple possible INFO/usage keys,
+                 ;; accept numbers or numeric strings and sanitize to integers.
+                 (uobj (and (listp info) (plist-get info :usage)))
+                 (raw-out
+                  (let ((v (and (listp info)
+                                (or (plist-get info :output-tokens)
+                                    (plist-get info :completion-tokens)
+                                    (plist-get info :tokens-out)
+                                    (plist-get info :output_tokens)
+                                    (plist-get info :tokens_out)
+                                    (and (listp uobj)
+                                         (or (plist-get uobj :output-tokens)
+                                             (plist-get uobj :completion-tokens)
+                                             (plist-get uobj :tokens-out)
+                                             (plist-get uobj :completion_tokens)
+                                             (plist-get uobj :output_tokens)
+                                             (plist-get uobj :tokens_out)))))))
+                    (cond
+                     ((numberp v) v)
+                     ((and (stringp v) (string-match-p "\\`[0-9]+\\'" v)) (string-to-number v))
+                     (t nil))))
+                 (raw-in
+                  (let ((v (and (listp info)
+                                (or (plist-get info :input-tokens)
+                                    (plist-get info :prompt-tokens)
+                                    (plist-get info :tokens-in)
+                                    (plist-get info :input_tokens)
+                                    (plist-get info :tokens_in)
+                                    (and (listp uobj)
+                                         (or (plist-get uobj :input-tokens)
+                                             (plist-get uobj :prompt-tokens)
+                                             (plist-get uobj :tokens-in)
+                                             (plist-get uobj :prompt_tokens)
+                                             (plist-get uobj :input_tokens)
+                                             (plist-get uobj :tokens_in)))))))
+                    (cond
+                     ((numberp v) v)
+                     ((and (stringp v) (string-match-p "\\`[0-9]+\\'" v)) (string-to-number v))
+                     (t nil))))
                  (out (and (numberp raw-out) (>= raw-out 0) (truncate raw-out)))
                  (in  (and (numberp raw-in)  (>= raw-in 0)  (truncate raw-in)))
                  (usage (let (u)
-                          (when in  (setq u (plist-put u :tokens-in in)))
-                          (when out (setq u (plist-put u :tokens-out out)))
+                          (when (integerp in)  (setq u (plist-put u :tokens-in in)))
+                          (when (integerp out) (setq u (plist-put u :tokens-out out)))
                           u))
+                 ;; Fallback: if usage is missing, try to extract from GPTel FSM info.
+                 (dummy-fallback
+                  (when (and (not (plist-get usage :tokens-in))
+                             (not (plist-get usage :tokens-out)))
+                    (when-let* ((fsm (carriage-transport-gptel--gptel-fsm-for-buffer origin-buffer))
+                                (info2 (ignore-errors (gptel-fsm-info fsm))))
+                      (let* ((uobj2 (and (listp info2) (plist-get info2 :usage)))
+                             (vout (and (listp info2)
+                                        (or (plist-get info2 :output-tokens)
+                                            (plist-get info2 :completion-tokens)
+                                            (plist-get info2 :tokens-out)
+                                            (plist-get info2 :output_tokens)
+                                            (plist-get info2 :tokens_out)
+                                            (and (listp uobj2)
+                                                 (or (plist-get uobj2 :output-tokens)
+                                                     (plist-get uobj2 :completion-tokens)
+                                                     (plist-get uobj2 :tokens-out)
+                                                     (plist-get uobj2 :completion_tokens)
+                                                     (plist-get uobj2 :output_tokens)
+                                                     (plist-get uobj2 :tokens_out))))))
+                             (vin  (and (listp info2)
+                                        (or (plist-get info2 :input-tokens)
+                                            (plist-get info2 :prompt-tokens)
+                                            (plist-get info2 :tokens-in)
+                                            (plist-get info2 :input_tokens)
+                                            (plist-get info2 :tokens_in)
+                                            (and (listp uobj2)
+                                                 (or (plist-get uobj2 :input-tokens)
+                                                     (plist-get uobj2 :prompt-tokens)
+                                                     (plist-get uobj2 :tokens-in)
+                                                     (plist-get uobj2 :prompt_tokens)
+                                                     (plist-get uobj2 :input_tokens)
+                                                     (plist-get uobj2 :tokens_in)))))))
+                        (setq out (and (numberp vout) (>= vout 0) (truncate vout)))
+                        (setq in  (and (numberp vin)  (>= vin 0)  (truncate vin)))
+                        (setq usage nil)
+                        (when (integerp in)  (setq usage (plist-put usage :tokens-in in)))
+                        (when (integerp out) (setq usage (plist-put usage :tokens-out out)))))))
                  (status (pcase final ('done 'done) ('abort 'abort) ('timeout 'timeout) (_ 'error)))
                  (cost nil))
             ;; Best-effort pricing (no network). If pricing is unavailable, cost remains nil.
-            (when (and (require 'carriage-pricing nil t)
-                       (stringp (or model-str "")))
-              (let* ((canon (concat "gptel:" model-str))
-                     (table (carriage-pricing-load-table (with-current-buffer origin-buffer default-directory))))
-                (setq cost (carriage-pricing-compute canon usage table))))
+            ;; Always produce a 'pricing:' line with status (or explicit skip reason) for diagnostics.
+            (setq cost (carriage-transport-gptel--pricing-compute-and-log origin-buffer model-str usage))
+            ;; Best-effort: also write usage+cost into fingerprint for doc-cost aggregation
+            (when (and (fboundp 'carriage-fingerprint-note-usage-and-cost)
+                       (or (plist-get usage :tokens-in) (plist-get usage :tokens-out)))
+              (ignore-errors
+                (carriage-fingerprint-note-usage-and-cost usage 'gptel nil model-str)))
             ;; Insert #+CARRIAGE_RESULT near end of buffer
             (with-current-buffer origin-buffer
               (save-excursion
@@ -463,17 +569,34 @@ It MUST be idempotent."
                             :CAR_REQ_ID id
                             :CAR_STATUS status
                             :CAR_BACKEND 'gptel
-                            :CAR_PROVIDER nil
-                            :CAR_MODEL (or model-str "")
-                            :CAR_TOKENS_IN (plist-get usage :tokens-in)
-                            :CAR_TOKENS_OUT (plist-get usage :tokens-out)
-                            :CAR_COST_IN_U (and cost (plist-get cost :cost-in-u))
-                            :CAR_COST_OUT_U (and cost (plist-get cost :cost-out-u))
-                            :CAR_COST_AUDIO_IN_U (and cost (plist-get cost :cost-audio-in-u))
-                            :CAR_COST_AUDIO_OUT_U (and cost (plist-get cost :cost-audio-out-u))
-                            :CAR_COST_TOTAL_U (and cost (plist-get cost :cost-total-u))
-                            :CAR_COST_KNOWN (and cost (plist-get cost :known))
-                            :CAR_TS (float-time))))
+                            :CAR_PROVIDER nil))
+                       ;; Include model only when user opts in (avoid duplication with fingerprint)
+                       (pl (if carriage-transport-gptel-result-include-model
+                               (plist-put pl :CAR_MODEL (or model-str ""))
+                             pl))
+                       (pl (if (plist-get usage :tokens-in)
+                               (plist-put pl :CAR_TOKENS_IN (plist-get usage :tokens-in))
+                             pl))
+                       (pl (if (plist-get usage :tokens-out)
+                               (plist-put pl :CAR_TOKENS_OUT (plist-get usage :tokens-out))
+                             pl))
+                       (pl (if (and cost (plist-get cost :cost-in-u))
+                               (plist-put pl :CAR_COST_IN_U (plist-get cost :cost-in-u))
+                             pl))
+                       (pl (if (and cost (plist-get cost :cost-out-u))
+                               (plist-put pl :CAR_COST_OUT_U (plist-get cost :cost-out-u))
+                             pl))
+                       (pl (if (and cost (plist-get cost :cost-audio-in-u))
+                               (plist-put pl :CAR_COST_AUDIO_IN_U (plist-get cost :cost-audio-in-u))
+                             pl))
+                       (pl (if (and cost (plist-get cost :cost-audio-out-u))
+                               (plist-put pl :CAR_COST_AUDIO_OUT_U (plist-get cost :cost-audio-out-u))
+                             pl))
+                       (pl (plist-put pl :CAR_COST_TOTAL_U (and cost (plist-get cost :cost-total-u))))
+                       ;; KNOWN = true only when total cost is computed (integer)
+                       (pl (let ((tt (and cost (plist-get cost :cost-total-u))))
+                             (plist-put pl :CAR_COST_KNOWN (and (integerp tt) t))))
+                       (pl (plist-put pl :CAR_TS (float-time))))
                   (insert (format "#+CARRIAGE_RESULT: %S\n" pl)))))
             ;; Trigger doc-cost refresh (debounced)
             (when (fboundp 'carriage-ui-doc-cost-schedule-refresh)
@@ -485,7 +608,7 @@ It MUST be idempotent."
               (ignore-errors
                 (with-current-buffer origin-buffer
                   (carriage-doc-state-summary-refresh origin-buffer)))))))
-        t))))
+      t)))
 
 ;; ---------------------------------------------------------------------
 ;; Callback
@@ -652,11 +775,11 @@ This implementation is minimal and callback-driven, with watchdog + cleanup."
                 (when (and sys-frag (not (equal system* system)))
                   (carriage-log "Transport[gptel] inject typedblocks-v1 fragment into :system"))
                 (gptel-request
-                 prompt
-                 :callback cb
-                 :buffer buffer
-                 :stream t
-                 :system system*)))
+                    prompt
+                  :callback cb
+                  :buffer buffer
+                  :stream t
+                  :system system*)))
           (error
            ;; Request could not be started at all.
            (carriage-log "Transport[gptel] START-ERROR id=%s err=%s" id (error-message-string err))

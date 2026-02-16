@@ -414,7 +414,7 @@ Default is t (include plain segments by default; toggle to focus only on typed b
 
 ;; -------------------------------------------------------------------
 ;; Typed-blocks structure hint (controls Ask/Hybrid system guidance)
-(defcustom carriage-mode-typedblocks-structure-hint t
+(defcustom carriage-mode-typedblocks-structure-hint nil
   "When non-nil, Ask/Hybrid system prompts include a compact \"Typed Blocks (v1)\" guidance
 asking the model to wrap key information into begin_<type> blocks (task, analysis, plan, verify, commands,
 question, answer, context; notes is optional). Turning it off keeps the intent semantics intact

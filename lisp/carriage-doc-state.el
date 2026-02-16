@@ -78,6 +78,12 @@ When nil (default), render a richer badge (suite/model/context toggles, etc.)."
   :type 'boolean
   :group 'carriage-doc-state)
 
+(defcustom carriage-doc-state-result-show-model nil
+  "Show model in CARRIAGE_RESULT summary overlay.
+Default is nil to avoid duplication with FINGERPRINT."
+  :type 'boolean
+  :group 'carriage-doc-state)
+
 (defcustom carriage-doc-state-tooltip-verbosity 'brief
   "Verbosity policy for doc-state fold tooltips (CARRIAGE_STATE/CARRIAGE_FINGERPRINT).
 
@@ -828,44 +834,62 @@ Also shows total request cost when present (as the last badge):
                                      "")))
                          (concat ic gap (carriage-doc-state--as-string profile)))
                        'shadow))))
-    (string-join (delq nil (list intent-b suite-b model-b ctx-b scope-b profile-b)) " ")))
+    (string-join (delq nil (list intent-b suite-b model-b ctx-b scope-b profile-b cost-b)) " ")))
 
 (defun carriage-doc-state--summary-string-result (pl)
   "Return compact summary string for CARRIAGE_RESULT plist PL.
 
-Shows: model, tokens (in/out when present) and total cost when present."
+Always shows status, tokens (with dashes when unknown), and total cost; model can be shown optionally."
   (let* ((backend (plist-get pl :CAR_BACKEND))
          (provider (plist-get pl :CAR_PROVIDER))
          (model (plist-get pl :CAR_MODEL))
+         (status (plist-get pl :CAR_STATUS))
          (tin (plist-get pl :CAR_TOKENS_IN))
          (tout (plist-get pl :CAR_TOKENS_OUT))
          (total-u (plist-get pl :CAR_COST_TOTAL_U))
-         (known (plist-get pl :CAR_COST_KNOWN))
+         (ts (plist-get pl :CAR_TS))
          (model-ic (carriage-doc-state--ui-icon 'model nil))
          (receipt-ic (carriage-doc-state--ui-icon 'report nil))
-         (model-b (carriage-doc-state--badge
-                   (let* ((ic (or model-ic ""))
-                          (gap (if (and (stringp ic) (> (length ic) 0))
-                                   (carriage-doc-state--icon-gap)
-                                 "")))
-                     (concat ic gap (carriage-doc-state--llm-display-name backend provider model)))
-                   'mode-line-emphasis))
-         (tok-b (let ((parts (delq nil
-                                   (list (and (integerp tin) (format "in:%d" tin))
-                                         (and (integerp tout) (format "out:%d" tout))))))
-                  (when parts
-                    (carriage-doc-state--badge (mapconcat #'identity parts " ") 'shadow))))
-         (cost-b (cond
-                  ((integerp total-u)
-                   (let* ((ic (or receipt-ic "")) (gap (if (and (stringp ic) (> (length ic) 0))
-                                                           (carriage-doc-state--icon-gap) "")))
-                     (carriage-doc-state--badge
-                      (concat ic gap (carriage-doc-state--format-money-suffix total-u))
-                      'shadow)))
-                  ((and (plist-member pl :CAR_COST_TOTAL_U) (not (integerp total-u)))
-                   (carriage-doc-state--badge "—" 'shadow))
-                  (t nil))))
-    (string-join (delq nil (list model-b tok-b cost-b)) " ")))
+         (clock-ic (carriage-doc-state--ui-icon 'clock "⏱"))
+         (status-ic
+          (pcase status
+            ('done     (carriage-doc-state--ui-icon 'ok "✓"))
+            ('streaming (carriage-doc-state--ui-icon 'waiting "…"))
+            ('dispatch (carriage-doc-state--ui-icon 'waiting "…"))
+            ('waiting  (carriage-doc-state--ui-icon 'waiting "…"))
+            ('abort    (carriage-doc-state--ui-icon 'stop "⛔"))
+            ('timeout  (carriage-doc-state--ui-icon 'timeout "⏲"))
+            (_         (carriage-doc-state--ui-icon 'dot "•"))))
+         (status-b (carriage-doc-state--badge (or status-ic "•") 'mode-line-emphasis))
+         (model-b (when carriage-doc-state-result-show-model
+                    (carriage-doc-state--badge
+                     (let* ((ic (or model-ic ""))
+                            (gap (if (and (stringp ic) (> (length ic) 0))
+                                     (carriage-doc-state--icon-gap)
+                                   "")))
+                       (concat ic gap (carriage-doc-state--llm-display-name backend provider model)))
+                     'mode-line-emphasis)))
+         ;; Tokens: always show as in:VAL out:VAL, with VAL being number or "—"
+         (tok-b (let* ((in-str (if (integerp tin) (number-to-string tin) "—"))
+                       (out-str (if (integerp tout) (number-to-string tout) "—"))
+                       (s (format "in:%s out:%s" in-str out-str)))
+                  (carriage-doc-state--badge s 'shadow)))
+         ;; Cost: always show [receipt] VALUE or "—"
+         (cost-b (let* ((ic (or receipt-ic "")) (gap (if (and (stringp ic) (> (length ic) 0))
+                                                         (carriage-doc-state--icon-gap) "")))
+                   (carriage-doc-state--badge
+                    (concat ic gap
+                            (if (integerp total-u)
+                                (carriage-doc-state--format-money-suffix total-u)
+                              "—"))
+                    'shadow)))
+         ;; Time: optional small clock with HH:MM (local)
+         (time-b (when (numberp ts)
+                   (let* ((tm (ignore-errors (format-time-string "%H:%M" (seconds-to-time ts))))
+                          (ic (or clock-ic "")) (gap (if (and (stringp ic) (> (length ic) 0))
+                                                         (carriage-doc-state--icon-gap) "")))
+                     (carriage-doc-state--badge (concat ic gap (or tm "")) 'shadow)))))
+    (string-join (delq nil (list status-b model-b tok-b cost-b time-b)) " ")))
 
 (defun carriage-doc-state--tooltip-string (pl)
   "Return detailed tooltip text for CARRIAGE_STATE plist PL (includes budgets)."
@@ -1168,7 +1192,7 @@ Perf invariant:
                (format "Cost: %s" (carriage-doc-state--format-money-suffix cost-u-fp)))
               ((and (listp pl0) (plist-member pl0 :CAR_COST_TOTAL_U))
                "Cost: —")
-              (_ nil)))
+              (t nil)))
             ('CARRIAGE_RESULT
              (cond
               ((integerp cost-u-res)
@@ -1178,7 +1202,7 @@ Perf invariant:
               ((and (listp pl0) (plist-member pl0 :CAR_COST_TOTAL_U))
                (format "Cost: — (tokens in=%s out=%s)"
                        (or tokens-in "—") (or tokens-out "—")))
-              (_ nil)))
+              (t nil)))
             (_ nil))))
     (string-join
      (delq nil
@@ -1388,7 +1412,7 @@ Perf:
 
   ;; Critical: restore folded/revealed according to current point after refresh.
   (carriage-doc-state--fold--apply-for-point)
-  t))
+  t)
 
 (defun carriage-doc-state--fold--schedule-refresh (beg end _len)
   "Coalesced schedule of fold overlay refresh (perf critical).
@@ -1412,19 +1436,23 @@ Debounce/coalescing semantics:
             (save-excursion
               (let ((case-fold-search t)
                     (hit-state nil)
-                    (hit-fp nil))
+                    (hit-fp nil)
+                    (hit-res nil))
                 (goto-char beg)
                 (beginning-of-line)
                 (setq hit-state (or hit-state (looking-at-p "^[ \t]*#\\+PROPERTY:[ \t]+CARRIAGE_STATE\\b")))
                 (setq hit-fp    (or hit-fp    (looking-at-p "^[ \t]*#\\+CARRIAGE_FINGERPRINT\\b")))
+                (setq hit-res   (or hit-res   (looking-at-p "^[ \t]*#\\+CARRIAGE_RESULT\\b")))
                 (goto-char end)
                 (beginning-of-line)
                 (setq hit-state (or hit-state (looking-at-p "^[ \t]*#\\+PROPERTY:[ \t]+CARRIAGE_STATE\\b")))
                 (setq hit-fp    (or hit-fp    (looking-at-p "^[ \t]*#\\+CARRIAGE_FINGERPRINT\\b")))
+                (setq hit-res   (or hit-res   (looking-at-p "^[ \t]*#\\+CARRIAGE_RESULT\\b")))
                 (cond
-                 ((and hit-state hit-fp) 'both)
+                 ((or (and hit-state hit-fp) (and hit-state hit-res) (and hit-fp hit-res)) 'both)
                  (hit-state 'state)
                  (hit-fp 'fingerprint)
+                 (hit-res 'result)
                  (t nil))))))
       (when kind
         ;; Mark what needs refresh. This is consumed by refresh engine to avoid

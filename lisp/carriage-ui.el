@@ -302,8 +302,11 @@ May scan buffer text; must not be called from redisplay."
               ;; Explicit nil (unknown cost)
               (setq unknown (1+ unknown)))
              (t nil)))))
-      (when (<= results-found 0)
-        ;; Fallback: legacy fingerprints
+      ;; Fallback logic:
+      ;; - If there are NO result lines at all → use fingerprint lines.
+      ;; - If there ARE result lines but NONE has a known integer cost → use fingerprint lines.
+      (when (or (<= results-found 0) (<= known 0))
+        (setq sum 0 known 0 unknown 0)
         (save-excursion
           (goto-char (point-min))
           (while (re-search-forward "^[ \t]*#\\+CARRIAGE_FINGERPRINT:[ \t]*\\(.*\\)$" nil t)
