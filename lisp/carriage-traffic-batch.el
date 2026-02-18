@@ -23,6 +23,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function carriage--traffic--trim-if-needed "carriage-transport" (buf))
+
 (defgroup carriage-traffic-batch nil
   "Batcher for Carriage traffic logging to reduce frequent redisplay."
   :group 'carriage-traffic)
@@ -32,11 +34,11 @@
 Entries are enqueued and flushed on a short timer, reducing redisplay frequency."
   :type 'boolean :group 'carriage-traffic-batch)
 
-(defcustom carriage-traffic-batch-interval 0.1
+(defcustom carriage-traffic-batch-interval 0.15
   "Interval (seconds) between batched flushes of traffic logs."
   :type 'number :group 'carriage-traffic-batch)
 
-(defcustom carriage-traffic-batch-bytes-threshold 4096
+(defcustom carriage-traffic-batch-bytes-threshold 16384
   "Flush the queue early when the total size of enqueued payloads reaches this threshold (bytes).
 Set to nil to disable early flush based on size."
   :type '(choice (const :tag "Disabled" nil) integer)
@@ -54,6 +56,9 @@ Each entry is a plist: (:kind 'global|'local :fn ORIG :args LIST :bytes N).")
 
 (defvar carriage-traffic-batch--flushing nil
   "Reentrancy guard for the flush routine.")
+
+(defvar carriage-traffic-batch--flushed-buffers nil
+  "List of traffic buffers touched during the current batch flush.")
 
 (defvar carriage-traffic-batch--flush-count 0
   "Number of flushes performed (diagnostic; used in tests).")
@@ -95,6 +100,7 @@ Each entry is a plist: (:kind 'global|'local :fn ORIG :args LIST :bytes N).")
   "Flush pending traffic log entries."
   (when (and carriage-traffic-batch-enabled (not carriage-traffic-batch--flushing))
     (let ((carriage-traffic-batch--flushing t)
+          (carriage-traffic-batch--flushed-buffers nil)
           (q (nreverse carriage-traffic-batch--queue)))
       (setq carriage-traffic-batch--queue nil)
       (setq carriage-traffic-batch--queued-bytes 0)
@@ -104,7 +110,13 @@ Each entry is a plist: (:kind 'global|'local :fn ORIG :args LIST :bytes N).")
       (dolist (it q)
         (condition-case _e
             (apply (plist-get it :fn) (plist-get it :args))
-          (error nil))))))
+          (error nil)))
+      ;; One trim pass per affected buffer (deferred to the end of batch).
+      (when (listp carriage-traffic-batch--flushed-buffers)
+        (dolist (b (delete-dups (cl-remove-if-not #'buffer-live-p carriage-traffic-batch--flushed-buffers)))
+          (ignore-errors
+            (with-current-buffer b
+              (carriage--traffic--trim-if-needed b))))))))
 
 (defun carriage-traffic-batch--around-global (orig-fn dir fmt &rest args)
   "Around advice for `carriage-traffic-log'."

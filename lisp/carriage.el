@@ -43,6 +43,9 @@
 (require 'carriage-engine-emacs)
 (require 'carriage-mode)
 (require 'carriage-transport)
+(require 'carriage-stream-perf)
+(require 'carriage-stream-tune)
+(require 'carriage-stream-silence)
 (require 'carriage-task)
 ;; Transports are loaded lazily by carriage-transport-dispatch per spec.
 ;; Do not require adapters by default here.

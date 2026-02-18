@@ -44,11 +44,11 @@
   "Echo transport adapter (development fallback)."
   :group 'carriage)
 
-(defcustom carriage-transport-echo-chunk-ms 120
+(defcustom carriage-transport-echo-chunk-ms 160
   "Interval between streamed chunks for echo transport, in ms."
   :type 'integer :group 'carriage-transport-echo)
 
-(defcustom carriage-transport-echo-chunk-size 48
+(defcustom carriage-transport-echo-chunk-size 96
   "Size of each streamed chunk (characters)."
   :type 'integer :group 'carriage-transport-echo)
 
@@ -189,7 +189,8 @@ Does not modify the Org buffer and does not call 'carriage-transport-begin'."
                                          (if (<= len carriage--resp-tail-limit)
                                              concatd
                                            (substring concatd (- len carriage--resp-tail-limit) len)))))
-                               (carriage-traffic-log 'in "%s" chunk)))))
+                               ;; omit per-chunk traffic logging to avoid UI stalls
+                               ))))
                      (error
                       (carriage-log "Echo stream error: %s" (error-message-string e))
                       (carriage-transport-complete t)

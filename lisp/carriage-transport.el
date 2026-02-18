@@ -42,7 +42,15 @@
 
 (defgroup carriage-traffic nil
   "Traffic logging for Carriage (per-buffer buffers, summaries, file logging)."
-  :group 'carriage)
+  :group 'carriage-traffic)
+
+;; Batch flush coordination (declared in carriage-traffic-batch.el; referenced here)
+(defvar carriage-traffic-batch--flushing nil)
+(defvar carriage-traffic-batch--flushed-buffers nil)
+
+;; Global GC guard during streaming (set in transport-begin/complete)
+(defvar carriage--gc-guard-active nil)
+(defvar carriage--gc-guard-prev-threshold nil)
 
 (defcustom carriage-traffic-summary-head-bytes 4096
   "Max bytes from the beginning of the response to include in summary."
@@ -63,6 +71,11 @@
 (defcustom carriage-traffic-log-file "carriage-traffic.log"
   "Path to traffic log file. Relative path is resolved against origin buffer's default-directory."
   :type 'string :group 'carriage-traffic)
+
+(defcustom carriage-traffic-trim-on-append t
+  "When non-nil, trim traffic buffers immediately on each append.
+When nil, callers (e.g., batch flush) are responsible for triggering trim explicitly."
+  :type 'boolean :group 'carriage-traffic)
 
 (defun carriage--traffic--origin-name (origin-buffer)
   "Return a short human name for ORIGIN-BUFFER (file basename or buffer-name)."
@@ -102,20 +115,27 @@
             (delete-region (point-min) (point))))))))
 
 (defun carriage--traffic-append (origin-buffer text)
-  "Append TEXT to per-origin traffic buffer and trim if needed. Also write to file if enabled."
+  "Append TEXT to per-origin traffic buffer and trim if needed. Also write to file if enabled.
+
+When batching is active (carriage-traffic-batch--flushing), defer trimming to the
+end of the batch and record the target buffer in `carriage-traffic-batch--flushed-buffers'."
   (let ((buf (carriage--traffic--ensure-buffer origin-buffer)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (goto-char (point-max))
         (insert text)
         (unless (string-suffix-p "\n" text) (insert "\n"))))
-    (carriage--traffic--trim-if-needed buf))
+    (if carriage-traffic-batch--flushing
+        (progn
+          (when (buffer-live-p buf)
+            (push buf carriage-traffic-batch--flushed-buffers)))
+      (carriage--traffic--trim-if-needed buf)))
   (when carriage-traffic-log-to-file
     (condition-case _e
         (let* ((root (with-current-buffer origin-buffer default-directory))
                (path (if (file-name-absolute-p carriage-traffic-log-file)
                          carriage-traffic-log-file
-                       (expand-file-name carriage-traffic-log-file root))))
+                       (expand-name carriage-traffic-log-file root))))
           (make-directory (file-name-directory path) t)
           (with-temp-buffer
             (insert text)
@@ -194,6 +214,11 @@ When BUFFER is non-nil, operate in that buffer."
       (when (functionp abort-fn)
         (carriage-register-abort-handler abort-fn))
       (carriage-log "Transport: begin (abort=%s)" (if (functionp abort-fn) "installed" "none"))
+      ;; GC guard: raise threshold during request to reduce pauses.
+      (unless carriage--gc-guard-active
+        (setq carriage--gc-guard-prev-threshold gc-cons-threshold)
+        (setq gc-cons-threshold most-positive-fixnum)
+        (setq carriage--gc-guard-active t))
       (carriage-ui-set-state 'sending)
       ;; Start buffer preloader (if available) at the insertion point (guard duplicate overlays)
       (when (and (fboundp 'carriage--preloader-start)
@@ -255,6 +280,12 @@ When BUFFER is non-nil, operate in that buffer (default is current buffer)."
           (when (require 'carriage-transport-gptel nil t)
             (when (fboundp 'carriage-transport-gptel-emergency-cleanup)
               (carriage-transport-gptel-emergency-cleanup t "transport-complete/error")))))
+      ;; Restore GC threshold and schedule a light GC after completion.
+      (when carriage--gc-guard-active
+        (setq gc-cons-threshold (or carriage--gc-guard-prev-threshold gc-cons-threshold))
+        (setq carriage--gc-guard-prev-threshold nil)
+        (setq carriage--gc-guard-active nil)
+        (run-at-time 0.2 nil (lambda () (ignore-errors (garbage-collect)))))
       (if errorp
           (carriage-ui-set-state 'error)
         (carriage-ui-set-state 'idle))
