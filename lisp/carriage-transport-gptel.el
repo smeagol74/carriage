@@ -835,21 +835,38 @@ It MUST be idempotent."
                               (if (string= system0 system2) "no" "yes")))
       (cons prompt2 system2))))
 
-(defun carriage-transport-gptel--dispatch-invoke (buffer id prompt2 system2 cb)
-  "Invoke GPTel request with prepared PROMPT2 and SYSTEM2, finalizing on start errors."
+(defun carriage-transport-gptel--dispatch-invoke (buffer id prompt2 system2 cb model)
+  "Invoke GPTel request with prepared PROMPT2 and SYSTEM2, respecting selected MODEL.
+MODEL is the Carriage-selected model (symbol or string). When present, bind it to
+`gptel-model` dynamically for this request so GPTel uses it instead of its global default."
   (condition-case err
-      (let ((gptel-backend (and (boundp 'gptel-backend) gptel-backend))
-            (gptel-model   (and (boundp 'gptel-model) gptel-model)))
-        ;; If model is provided as string, gptel expects symbol; but we don't mutate global.
-        ;; Let gptel sanitize if needed; keep this adapter minimal.
+      (let* ((gptel-backend (and (boundp 'gptel-backend) gptel-backend))
+             (gptel-model-current (and (boundp 'gptel-model) gptel-model))
+             ;; Normalize Carriage model to a plain model id understood by GPTel:
+             ;; drop any leading backend/provider prefixes like "gptel:provider:model".
+             (model-str (cond
+                         ((stringp model) model)
+                         ((symbolp model) (symbol-name model))
+                         (t nil)))
+             (model-sanitized (when (stringp model-str)
+                                (let* ((parts (split-string model-str ":" t)))
+                                  (car (last parts))))))
         (ignore gptel-backend)
-        (ignore gptel-model)
-        (gptel-request
-         prompt2
-         :callback cb
-         :buffer buffer
-         :stream t
-         :system system2))
+        ;; Bind model only when we have a sane string; otherwise defer to GPTel defaults.
+        (if (and (stringp model-sanitized) (not (string-empty-p model-sanitized)))
+            (let ((gptel-model model-sanitized))
+              (gptel-request
+               prompt2
+               :callback cb
+               :buffer buffer
+               :stream t
+               :system system2))
+          (gptel-request
+           prompt2
+           :callback cb
+           :buffer buffer
+           :stream t
+           :system system2)))
     (error
      ;; Request could not be started at all.
      (carriage-log "Transport[gptel] START-ERROR id=%s err=%s" id (error-message-string err))
