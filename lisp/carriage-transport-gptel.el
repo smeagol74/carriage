@@ -41,6 +41,7 @@
 (declare-function gptel-request "gptel-request" (&optional prompt &rest args))
 (declare-function gptel-abort "gptel-request" (buf))
 (declare-function gptel-fsm-info "gptel-request" (fsm))
+(defvar gptel-model)
 
 (defgroup carriage-transport-gptel nil
   "GPTel transport adapter (v2) for Carriage."
@@ -835,38 +836,43 @@ It MUST be idempotent."
                               (if (string= system0 system2) "no" "yes")))
       (cons prompt2 system2))))
 
+(defun carriage-transport-gptel--normalize-model (model)
+  "Return MODEL normalized for GPTel as a symbol, or nil.
+If MODEL is in \"backend[:provider]:model\" form, keep only the last segment."
+  (let* ((raw (cond
+               ((symbolp model) (symbol-name model))
+               ((stringp model) model)
+               ((null model) nil)
+               (t (format "%s" model)))))
+    (when (and (stringp raw) (not (string-empty-p (string-trim raw))))
+      (let* ((s (string-trim raw))
+             (parts (split-string s ":" t))
+             (name (if (and parts (> (length parts) 0))
+                       (car (last parts))
+                     s)))
+        (when (and (stringp name) (not (string-empty-p name)))
+          (intern name))))))
+
 (defun carriage-transport-gptel--dispatch-invoke (buffer id prompt2 system2 cb model)
-  "Invoke GPTel request with prepared PROMPT2 and SYSTEM2, respecting selected MODEL.
-MODEL is the Carriage-selected model (symbol or string). When present, bind it to
-`gptel-model` dynamically for this request so GPTel uses it instead of its global default."
+  "Invoke GPTel request with prepared PROMPT2/SYSTEM2 and requested MODEL.
+Finalizes with error on startup failures."
   (condition-case err
-      (let* ((gptel-backend (and (boundp 'gptel-backend) gptel-backend))
-             (gptel-model-current (and (boundp 'gptel-model) gptel-model))
-             ;; Normalize Carriage model to a plain model id understood by GPTel:
-             ;; drop any leading backend/provider prefixes like "gptel:provider:model".
-             (model-str (cond
-                         ((stringp model) model)
-                         ((symbolp model) (symbol-name model))
-                         (t nil)))
-             (model-sanitized (when (stringp model-str)
-                                (let* ((parts (split-string model-str ":" t)))
-                                  (car (last parts))))))
+      (let* ((model-sym (carriage-transport-gptel--normalize-model model))
+             (gptel-backend (and (boundp 'gptel-backend) gptel-backend))
+             ;; Dynamic let-binding makes gptel-request use Carriage-selected model.
+             (gptel-model (or model-sym gptel-model)))
         (ignore gptel-backend)
-        ;; Bind model only when we have a sane string; otherwise defer to GPTel defaults.
-        (if (and (stringp model-sanitized) (not (string-empty-p model-sanitized)))
-            (let ((gptel-model model-sanitized))
-              (gptel-request
-               prompt2
-               :callback cb
-               :buffer buffer
-               :stream t
-               :system system2))
-          (gptel-request
-           prompt2
-           :callback cb
-           :buffer buffer
-           :stream t
-           :system system2)))
+        (when carriage-transport-gptel-diagnostics
+          (carriage-log "Transport[gptel] MODEL id=%s requested=%s normalized=%s"
+                        id
+                        (carriage-transport-gptel--snip model 120)
+                        (if model-sym (symbol-name model-sym) "nil")))
+        (gptel-request
+            prompt2
+          :callback cb
+          :buffer buffer
+          :stream t
+          :system system2))
     (error
      ;; Request could not be started at all.
      (carriage-log "Transport[gptel] START-ERROR id=%s err=%s" id (error-message-string err))
@@ -898,7 +904,7 @@ This implementation is minimal and callback-driven, with watchdog + cleanup."
              (system2 (cdr pair)))
         (carriage-transport-gptel--dispatch-init buffer id model source prompt abort-fn)
         (carriage-transport-gptel--dispatch-start-watchdog buffer id abort-fn)
-        (carriage-transport-gptel--dispatch-invoke buffer id prompt2 system2 cb)))
+        (carriage-transport-gptel--dispatch-invoke buffer id prompt2 system2 cb model)))
     t))
 
 (provide 'carriage-transport-gptel)
