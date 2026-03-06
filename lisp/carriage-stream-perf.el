@@ -14,7 +14,9 @@
 
 (with-eval-after-load 'carriage-mode
   (when (fboundp 'carriage--stream-insert-at-end)
-    (advice-add 'carriage--stream-insert-at-end :around #'carriage--stream-perf--around-insert)))
+    (unless (or (advice-member-p #'carriage--stream-perf--around-insert 'carriage--stream-insert-at-end)
+                (advice-member-p #'carriage--stream-silence--around-insert 'carriage--stream-insert-at-end))
+      (advice-add 'carriage--stream-insert-at-end :around #'carriage--stream-perf--around-insert))))
 
 (provide 'carriage-stream-perf)
 ;;; carriage-stream-perf.el ends here

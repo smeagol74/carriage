@@ -541,6 +541,14 @@ When a patch is applied and annotated, hiding takes effect immediately (overlays
   :type 'boolean
   :group 'carriage)
 
+(defcustom carriage-mode-applied-patch-fold-max-blocks 300
+  "Maximum number of applied patch blocks to auto-fold in one Org buffer.
+When exceeded, `carriage-mode' skips enabling applied-patch folding for this buffer
+to avoid overlay/redisplay degradation on large histories.
+Set to nil to disable this safeguard."
+  :type '(choice (const :tag "Unlimited" nil) integer)
+  :group 'carriage)
+
 (defcustom carriage-commit-default-message "carriage: apply changes"
   "Default commit message used by Commit commands.
 May be a string or a function of zero args returning string."
@@ -847,14 +855,48 @@ Policy:
       (ignore-errors (carriage-show-traffic)))
     (carriage-log "carriage-mode enabled in %s" (buffer-name))))
 
+(defun carriage--count-applied-patch-blocks-quick (&optional buffer stop-after)
+  "Return count of applied patch blocks in BUFFER (or current buffer).
+
+Scans only begin_patch header lines containing :applied t.
+When STOP-AFTER is a positive integer, scanning stops early once count exceeds it."
+  (with-current-buffer (or buffer (current-buffer))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (point-min))
+        (let ((case-fold-search t)
+              (n 0))
+          (while (and (re-search-forward
+                       "^[ \t]*#\\+begin_patch\\b.*\\_<:applied\\_>\\s-+t\\_>"
+                       nil t)
+                      (or (not (and (integerp stop-after) (> stop-after 0)))
+                          (<= n stop-after)))
+            (setq n (1+ n)))
+          n)))))
+
 (defun carriage-mode--fold-ui-enable ()
   "Enable UI folds for applied patches and reasoning blocks in this buffer."
   ;; Folding UI must not depend on keyspec being present/loaded.
-  ;; Fold applied patch blocks if enabled
+  ;; Fold applied patch blocks if enabled.
+  ;;
+  ;; Safeguard: avoid enabling applied-patch folding on very large histories to
+  ;; prevent overlay/redisplay degradation in long-lived buffers.
   (when (and (boundp 'carriage-mode-hide-applied-patches)
              carriage-mode-hide-applied-patches
              (require 'carriage-patch-fold nil t))
-    (ignore-errors (carriage-patch-fold-enable)))
+    (let* ((lim (and (boundp 'carriage-mode-applied-patch-fold-max-blocks)
+                     carriage-mode-applied-patch-fold-max-blocks))
+           (enable-fold t))
+      (when (and (integerp lim) (> lim 0))
+        (let ((cnt (carriage--count-applied-patch-blocks-quick (current-buffer) (1+ lim))))
+          (when (> cnt lim)
+            (setq enable-fold nil)
+            (carriage-log
+             "patch-fold: skipped in %s (applied=%d > max=%d)"
+             (buffer-name) cnt lim))))
+      (when enable-fold
+        (ignore-errors (carriage-patch-fold-enable)))))
   ;; Fold all reasoning blocks on mode enable (and keep newly streamed ones folded).
   (when (and (boundp 'carriage-mode-hide-reasoning-blocks)
              carriage-mode-hide-reasoning-blocks

@@ -77,4 +77,28 @@ This uses `carriage-stream-finalize' to trigger finalization."
        (sleep-for 0.01)
        (should (or (null carriage--stream-pending-events) (zerop (length carriage--stream-pending-events))))))))
 
+(ert-deftest carriage-stream-silence-prunes-legacy-insert-advices ()
+  "Installing silence advice should remove legacy perf/tune wrappers."
+  (unless (and (require 'carriage-mode nil t)
+               (require 'carriage-stream-perf nil t)
+               (require 'carriage-stream-tune nil t)
+               (require 'carriage-stream-silence nil t)
+               (fboundp 'carriage--stream-insert-at-end))
+    (ert-skip "Streaming modules not available; skipping advice dedupe test."))
+  (let ((target 'carriage--stream-insert-at-end))
+    (unwind-protect
+        (progn
+          (ignore-errors (advice-remove target #'carriage--stream-perf--around-insert))
+          (ignore-errors (advice-remove target #'carriage--stream-tune--around-insert))
+          (ignore-errors (advice-remove target #'carriage--stream-silence--around-insert))
+          (advice-add target :around #'carriage--stream-perf--around-insert)
+          (advice-add target :around #'carriage--stream-tune--around-insert)
+          (carriage-stream-silence--install)
+          (should (advice-member-p #'carriage--stream-silence--around-insert target))
+          (should-not (advice-member-p #'carriage--stream-perf--around-insert target))
+          (should-not (advice-member-p #'carriage--stream-tune--around-insert target)))
+      (ignore-errors (advice-remove target #'carriage--stream-perf--around-insert))
+      (ignore-errors (advice-remove target #'carriage--stream-tune--around-insert))
+      (ignore-errors (advice-remove target #'carriage--stream-silence--around-insert)))))
+
 (provide 'carriage-streaming-perf-test)

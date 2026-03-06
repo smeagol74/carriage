@@ -41,11 +41,26 @@ Calls ORIG-FN with ARGS under silent insert guards."
     (with-silent-modifications
       (apply orig-fn args))))
 
+(defun carriage-stream-silence--prune-legacy-advices ()
+  "Best-effort remove legacy stream-insert wrappers to avoid advice stacking."
+  (when (fboundp 'carriage--stream-insert-at-end)
+    (ignore-errors
+      (when (fboundp 'carriage--stream-perf--around-insert)
+        (advice-remove 'carriage--stream-insert-at-end
+                       #'carriage--stream-perf--around-insert)))
+    (ignore-errors
+      (when (fboundp 'carriage--stream-tune--around-insert)
+        (advice-remove 'carriage--stream-insert-at-end
+                       #'carriage--stream-tune--around-insert))))
+  t)
+
 (defun carriage-stream-silence--install ()
   "Install silent-insert advice if the target function is available."
   (when (fboundp 'carriage--stream-insert-at-end)
-    (advice-add 'carriage--stream-insert-at-end
-                :around #'carriage--stream-silence--around-insert)
+    (carriage-stream-silence--prune-legacy-advices)
+    (unless (advice-member-p #'carriage--stream-silence--around-insert 'carriage--stream-insert-at-end)
+      (advice-add 'carriage--stream-insert-at-end
+                  :around #'carriage--stream-silence--around-insert))
     t))
 
 (defun carriage-stream-silence--maybe-install ()
