@@ -29,7 +29,6 @@
 (require 'carriage-logging)
 (require 'carriage-ui)
 (require 'carriage-transport)
-(require 'carriage-typedblocks)
 
 ;; Avoid hard dependency cycle with carriage-mode at load time.
 (declare-function carriage-register-abort-handler "carriage-mode" (fn))
@@ -812,40 +811,23 @@ It MUST be idempotent."
 
 
 (defun carriage-transport-gptel--dispatch-prepare-payload (prompt system)
-  "Build system prompt fragment, sanitize payload and return (CONS PROMPT2 . SYSTEM2)."
-  (let* ((use-typedblocks-hint
-          (and (boundp 'carriage-mode-typedblocks-structure-hint)
-               carriage-mode-typedblocks-structure-hint))
-         (sys-frag
-          (and use-typedblocks-hint
-               (fboundp 'carriage-typedblocks-prompt-fragment-v1)
-               (carriage-typedblocks-prompt-fragment-v1)))
-         ;; Avoid double-injecting when the prompt builder already included it.
-         (sys-frag
-          (if (and (stringp system)
-                   (string-match-p "Org Typed Blocks v1" system))
-              nil
-            sys-frag))
-         (system* (cond
-                   ((and (stringp system) (> (length system) 0))
-                    (if sys-frag (concat sys-frag "\n\n" system) system))
-                   (sys-frag sys-frag)
-                   (t system))))
-    (when (and sys-frag (not (equal system* system)))
-      (carriage-log "Transport[gptel] inject typedblocks-v1 fragment into :system"))
-    (let* ((prompt0 (or prompt ""))
-           (system0 (or system* ""))
-           (prompt1 (carriage-transport--strip-internal-lines prompt0))
-           (system1 (carriage-transport--strip-internal-lines system0))
-           (prompt2 (carriage-transport-gptel--safe-utf8 prompt1))
-           (system2 (carriage-transport-gptel--safe-utf8 system1)))
-      (when (or (not (string= prompt0 prompt2))
-                (not (string= system0 system2)))
-        (carriage-log "Transport[gptel] WARN: payload sanitized (internal log lines or invalid bytes removed)")
-        (carriage-traffic-log 'out "payload: sanitized: prompt-diff=%s system-diff=%s"
-                              (if (string= prompt0 prompt2) "no" "yes")
-                              (if (string= system0 system2) "no" "yes")))
-      (cons prompt2 system2))))
+  "Sanitize payload and return (CONS PROMPT2 . SYSTEM2).
+
+Transport must not inject typedblocks guidance; prompt structure is owned by
+prompt builder."
+  (let* ((prompt0 (or prompt ""))
+         (system0 (or system ""))
+         (prompt1 (carriage-transport--strip-internal-lines prompt0))
+         (system1 (carriage-transport--strip-internal-lines system0))
+         (prompt2 (carriage-transport-gptel--safe-utf8 prompt1))
+         (system2 (carriage-transport-gptel--safe-utf8 system1)))
+    (when (or (not (string= prompt0 prompt2))
+              (not (string= system0 system2)))
+      (carriage-log "Transport[gptel] WARN: payload sanitized (internal log lines or invalid bytes removed)")
+      (carriage-traffic-log 'out "payload: sanitized: prompt-diff=%s system-diff=%s"
+                            (if (string= prompt0 prompt2) "no" "yes")
+                            (if (string= system0 system2) "no" "yes")))
+    (cons prompt2 system2)))
 
 (defun carriage-transport-gptel--normalize-model (model)
   "Return MODEL normalized for GPTel as a symbol, or nil.
@@ -910,7 +892,7 @@ This implementation is minimal and callback-driven, with watchdog + cleanup."
     (with-current-buffer buffer
       (let* ((cb (carriage-transport-gptel--make-callback buffer id))
              (abort-fn (carriage-transport-gptel--dispatch-make-abort buffer id))
-             (pair (carriage-transport-gptel--dispatch-prepare-payload prompt system buffer))
+             (pair (carriage-transport-gptel--dispatch-prepare-payload prompt system))
              (prompt2 (car pair))
              (system2 (cdr pair)))
         (carriage-transport-gptel--dispatch-init buffer id model source prompt abort-fn)

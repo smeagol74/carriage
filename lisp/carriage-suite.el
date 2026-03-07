@@ -171,6 +171,16 @@ FRAG is STRING or function (lambda (ctx) STRING)."
     (mapconcat #'identity lines "\n")))
 
 
+(defun carriage--typedblocks-hint-fragment (intent ctx)
+  "Return Typed Blocks v1 guidance fragment when enabled for INTENT in CTX.
+Enabled only when :typedblocks-structure-hint is non-nil and INTENT is Ask/Hybrid."
+  (when (and (plist-member ctx :typedblocks-structure-hint)
+             (plist-get ctx :typedblocks-structure-hint)
+             (memq intent '(Ask Hybrid))
+             (require 'carriage-typedblocks nil t)
+             (fboundp 'carriage-typedblocks-prompt-fragment-v1))
+    (ignore-errors (carriage-typedblocks-prompt-fragment-v1))))
+
 (defun carriage--resolve-op-fragment (op ctx)
   "Resolve prompt fragment for OP using overrides or registry.
 Return STRING or nil."
