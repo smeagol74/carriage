@@ -866,6 +866,27 @@ This is in addition to always auto-attaching binary files."
   :type 'integer
   :group 'carriage-transport-gptel-attachments)
 
+(defcustom carriage-transport-gptel-inline-text-max-bytes (* 200 1024)
+  "Maximum bytes to inline from a single text-like attachment.
+
+Inlining very large files can stall Emacs for a few seconds (disk I/O + huge
+string concatenation) before the request is even started. Files larger than this
+limit are NOT inlined and are instead mentioned in the \"metadata only\" note.
+
+Set to nil to disable the limit (not recommended)."
+  :type '(choice (const :tag "No limit" nil)
+                 integer)
+  :group 'carriage-transport-gptel-attachments)
+
+(defun carriage-transport-gptel--attachment-too-large-to-inline-p (attachment)
+  "Return non-nil when ATTACHMENT is too large to inline as text."
+  (let ((max carriage-transport-gptel-inline-text-max-bytes)
+        (sz (plist-get attachment :size-bytes)))
+    (and (integerp max)
+         (> max 0)
+         (integerp sz)
+         (> sz max))))
+
 (defun carriage-transport-gptel--read-block-path-lines (buffer begin-rx end-rx)
   "Collect trimmed non-empty path lines between BEGIN-RX and END-RX in BUFFER."
   (with-current-buffer buffer

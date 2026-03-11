@@ -7,10 +7,10 @@
 
 (ert-deftest carriage-project-map-invalidated-after-create ()
   "Project Map cache should be invalidated after successful create."
-  (let* ((carriage-context--project-map-allow-compute t)
-         (root (make-temp-file "carriage-map-create-" t))
+  (let* ((root (make-temp-file "carriage-map-create-" t))
          (default-directory root)
          (carriage-context-project-map-cache-ttl 3600))
+    (let ((carriage-context--project-map-allow-compute t))
     (call-process "git" nil nil nil "init" "-q" root)
     (let* ((file "new-file.txt"))
       (should-not (string-match-p
@@ -27,10 +27,10 @@
 
 (ert-deftest carriage-project-map-invalidated-after-rename-and-delete ()
   "Project Map cache should reflect rename/delete immediately after successful file ops."
-  (let* ((carriage-context--project-map-allow-compute t)
-         (root (make-temp-file "carriage-map-rm-" t))
+  (let* ((root (make-temp-file "carriage-map-rm-" t))
          (default-directory root)
          (carriage-context-project-map-cache-ttl 3600))
+    (let ((carriage-context--project-map-allow-compute t))
     (call-process "git" nil nil nil "init" "-q" root)
     (with-temp-file (expand-file-name "old.txt" root)
       (insert "data\n"))
@@ -50,7 +50,7 @@
                            :status)
                 'ok))
     (let ((after-delete (or (plist-get (carriage-context-project-map-build root) :text) "")))
-      (should-not (string-match-p (regexp-quote "new.txt") after-delete)))))
+      (should-not (string-match-p (regexp-quote "new.txt") after-delete))))))
 
 (provide 'carriage-context-project-map-invalidation-test)
 ;;; carriage-context-project-map-invalidation-test.el ends here
