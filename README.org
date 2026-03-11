@@ -1,4 +1,4 @@
-#+title: Carriage — «вязальная машинка для кода» на базе Emacs/Org
+#+title: Carriage — Станок для кода на базе Emacs/Org
 #+author: Carriage contributors
 #+language: ru
 #+options: toc:2 num:t
