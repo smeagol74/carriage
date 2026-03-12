@@ -5845,69 +5845,7 @@ Must not read file contents; uses the fast counter."
 
   )
 
-(defvar carriage-ui--ctx-timer-purge-last-time 0.0
-  "Timestamp (float seconds) of the last stale ctx-timer purge attempt.")
 
-(defun carriage-ui--purge-stale-ctx-timers ()
-  "Best-effort: cancel stale context refresh timers created by older Carriage versions.
-
-Motivation:
-- During upgrades, an already scheduled timer may still point to an older
-  byte-compiled closure with a required argument list like \"#[(b) ...]\".
-- Such timers may be invoked with 0 args (ARGS=nil) → wrong-number-of-arguments.
-
-This function is intentionally conservative and must never signal."
-  (ignore-errors (require 'timer))
-  (let* ((now (float-time))
-         ;; Throttle by time to avoid repeated scans when called defensively.
-         (last (or (and (boundp 'carriage-ui--ctx-timer-purge-last-time)
-                        carriage-ui--ctx-timer-purge-last-time)
-                   0.0))
-         (_ (setq carriage-ui--ctx-timer-purge-last-time now))
-         (candidates (ignore-errors (append (copy-sequence timer-list)
-                                            (copy-sequence timer-idle-list))))
-         (killed 0))
-    (dolist (tm candidates)
-      (condition-case _e
-          (when (timerp tm)
-            (let* (;; Robustly extract function/args across Emacs versions.
-                   (fn (cond
-                        ((fboundp 'timer--function) (ignore-errors (timer--function tm)))
-                        ((and (vectorp tm) (> (length tm) 5)) (aref tm 5))
-                        (t nil)))
-                   (args (cond
-                          ((fboundp 'timer--args) (ignore-errors (timer--args tm)))
-                          ((and (vectorp tm) (> (length tm) 6)) (aref tm 6))
-                          (t nil)))
-                   (s (and fn (prin1-to-string fn)))
-                   ;; If args are missing, Emacs will call the timer with 0 args.
-                   ;; Old byte-compiled closures expecting 1+ required args will explode.
-                   (no-args (or (null args) (equal args '()))))
-              (when (and (stringp s)
-                         ;; Only touch byte-compiled closures (riskier ones on upgrades).
-                         (string-match-p "#\\[" s)
-                         ;; Only touch timers clearly related to ctx badge internals.
-                         ;; Be slightly broader: some old closures don't contain our exact helper symbols,
-                         ;; but do contain compute-context-badge / ctx-cache / ctx-schedule-refresh.
-                         (or (string-match-p "carriage-ui--compute-context-badge" s)
-                             (string-match-p "carriage-ui--context-badge" s)
-                             (string-match-p "carriage-ui--ctx-schedule-refresh" s)
-                             (string-match-p "carriage-ui--ctx-refresh-timer" s)
-                             (string-match-p "carriage-ui--ctx-cache" s))
-                         no-args
-                         ;; Known broken pattern: closure has a required arg list (b) (or similar).
-                         ;; If it has required args and the timer has no args saved, it will be invoked with 0 args.
-                         (or (string-match-p "#\\[(b)" s)
-                             (string-match-p "#\\[([^)]*\\<b\\>[^)]*)" s)
-                             (string-match-p "save-current-buffer" s)))
-                (ignore-errors (cancel-timer tm))
-                (setq killed (1+ killed)))))
-        (error nil)))
-    killed))
-
-;; Purge stale ctx timers from older Carriage versions once at load time, so a legacy
-;; timer cannot fire (and error) before the first new refresh is scheduled.
-(ignore-errors (carriage-ui--purge-stale-ctx-timers))
 
 (defvar carriage-ui--gptel-context-version 0
   "Monotonic global counter incremented when gptel-context changes.
@@ -6053,9 +5991,8 @@ Updates context badge and refreshes the modeline."
   "Return short cost label.
 
 Policy:
-- If pricing is known, show money.
-- If pricing is unknown (or looks like unknown-but-zero), show tokens if available.
-- Otherwise show bytes, as a minimum fallback."
+- Show money only when we have a known, non-zero cost.
+- Otherwise (unknown/zero), prefer showing tokens; if tokens are missing, show bytes."
   (let* ((cost (and (boundp 'carriage--last-cost) carriage--last-cost))
          (usage (and (boundp 'carriage--last-usage) carriage--last-usage))
          (known (and (listp cost)
@@ -6067,12 +6004,9 @@ Policy:
          (bin (and (listp usage) (plist-get usage :bytes-in)))
          (bout (and (listp usage) (plist-get usage :bytes-out)))
          (has-tokens (or (integerp tin) (integerp tout)))
-         (has-bytes (or (integerp bin) (integerp bout)))
-         ;; Treat (known && total==0 && no usage) as "unknown" to avoid a misleading 0.
-         (looks-unknown-zero (and known (integerp total) (zerop total)
-                                  (not has-tokens) (not has-bytes))))
+         (has-bytes (or (integerp bin) (integerp bout))))
     (cond
-     ((and known (integerp total) (not looks-unknown-zero))
+     ((and known (integerp total) (> total 0))
       (if (fboundp 'carriage-pricing-format-money)
           (carriage-pricing-format-money total)
         (format "cost:%s" total)))
@@ -6103,22 +6037,19 @@ Policy:
          (has-tokens (or (integerp tin) (integerp tout)))
          (has-bytes (or (integerp bin) (integerp bout)))
          ;; Mirrors `carriage-ui--format-cost-or-usage'.
-         (looks-unknown-zero (and known (integerp total) (zerop total)
-                                  (not has-tokens) (not has-bytes))))
+         (show-money (and known (integerp total) (> total 0))))
     (string-join
      (delq nil
            (list
             (and (stringp mid) (not (string-empty-p mid)) (format "Model: %s" mid))
-            (cond
-             ((and known (integerp total) (not looks-unknown-zero))
-              (format "Cost: %s" total))
-             (t
+            (if show-money
+                (format "Cost: %s" total)
               (concat
                "Cost: unknown"
                (cond
                 (has-tokens " (fallback: tokens)")
                 (has-bytes  " (fallback: bytes)")
-                (t          "")))))
+                (t          ""))))
             (and (or tin tout)
                  (format "Tokens: in=%s out=%s"
                          (if (integerp tin) tin "—")
@@ -6128,6 +6059,7 @@ Policy:
                          (if (integerp bin) bin "—")
                          (if (integerp bout) bout "—")))))
      "\n")))
+
 
 
 (defun carriage-ui--ml-seg-cost ()
@@ -6168,6 +6100,7 @@ Policy:
      (t "—"))))
 
 
+
 (defun carriage-ui--status-tooltip ()
   "Tooltip for status segment: HTTP code/text + backend message."
   (let* ((code0 (and (boundp 'carriage--last-http-status) carriage--last-http-status))
@@ -6195,6 +6128,7 @@ Policy:
             (and (stringp be) (not (string-empty-p be)) (format "Backend: %s" be))
             (and (stringp mid) (not (string-empty-p mid)) (format "Model: %s" mid))))
      "\n")))
+
 
 (defun carriage-ui--ml-seg-status ()
   "Modeline segment: status with HTTP error tooltip."
