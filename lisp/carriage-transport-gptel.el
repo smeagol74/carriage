@@ -584,11 +584,30 @@ Returns killed0 count (or 0)."
     (carriage-transport-gptel--usage-from-info info2)))
 
 (defun carriage-transport-gptel--finalize--extract-usage (origin-buffer info)
-  "Return best-effort usage plist from INFO, with FSM fallback."
-  (let ((u (carriage-transport-gptel--usage-from-info info)))
-    (if (or (plist-get u :tokens-in) (plist-get u :tokens-out))
-        u
-      (carriage-transport-gptel--usage-from-fsm origin-buffer))))
+  "Return best-effort usage plist from INFO, with FSM fallback.
+Also merges bytes-in/out captured by our `gptel-request' wrapper when available."
+  (let* ((u0 (carriage-transport-gptel--usage-from-info info))
+         (u1 (if (or (plist-get u0 :tokens-in) (plist-get u0 :tokens-out))
+                 u0
+               (carriage-transport-gptel--usage-from-fsm origin-buffer)))
+         (bytes
+          (when (buffer-live-p origin-buffer)
+            (with-current-buffer origin-buffer
+              (and (boundp 'carriage--last-usage)
+                   (listp carriage--last-usage)
+                   carriage--last-usage))))
+         (tin  (and (listp u1) (plist-get u1 :tokens-in)))
+         (tout (and (listp u1) (plist-get u1 :tokens-out)))
+         (bin  (and (listp bytes) (plist-get bytes :bytes-in)))
+         (bout (and (listp bytes) (plist-get bytes :bytes-out))))
+    ;; IMPORTANT:
+    ;; Always return a plist with these keys (values may be nil).
+    ;; This ensures fingerprint/result upserts can still write placeholders,
+    ;; so UI/folds don't end up “empty” when usage/cost is unknown.
+    (list :tokens-in tin
+          :tokens-out tout
+          :bytes-in (and (integerp bin) bin)
+          :bytes-out (and (integerp bout) bout))))
 
 (defun carriage-transport-gptel--finalize--insert-result-line (origin-buffer id status model-str usage cost)
   "Insert #+CARRIAGE_RESULT line into ORIGIN-BUFFER."
@@ -604,12 +623,12 @@ Returns killed0 count (or 0)."
              (pl (if carriage-transport-gptel-result-include-model
                      (plist-put pl :CAR_MODEL (or model-str ""))
                    pl))
-             (pl (if (plist-get usage :tokens-in)
-                     (plist-put pl :CAR_TOKENS_IN (plist-get usage :tokens-in))
-                   pl))
-             (pl (if (plist-get usage :tokens-out)
-                     (plist-put pl :CAR_TOKENS_OUT (plist-get usage :tokens-out))
-                   pl))
+             ;; Always include usage keys (even when nil) so UI/fold code can render “-”
+             ;; and/or fall back to bytes.
+             (pl (plist-put pl :CAR_TOKENS_IN (plist-get usage :tokens-in)))
+             (pl (plist-put pl :CAR_TOKENS_OUT (plist-get usage :tokens-out)))
+             (pl (plist-put pl :CAR_BYTES_IN (plist-get usage :bytes-in)))
+             (pl (plist-put pl :CAR_BYTES_OUT (plist-get usage :bytes-out)))
              (pl (if (and cost (plist-get cost :cost-in-u))
                      (plist-put pl :CAR_COST_IN_U (plist-get cost :cost-in-u))
                    pl))
@@ -647,8 +666,36 @@ Returns killed0 count (or 0)."
            (status (pcase final ('done 'done) ('abort 'abort) ('timeout 'timeout) (_ 'error)))
            (cost nil))
       (setq cost (carriage-transport-gptel--pricing-compute-and-log origin-buffer model-str usage))
+      ;; Persist last request metrics for UI (modeline req-cost/status tooltips).
+      ;; Keep "unknown" values as nil (never coerce missing tokens/cost to 0).
+      (ignore-errors
+        (with-current-buffer origin-buffer
+          ;; Model id (best-effort stable string for UI).
+          (setq-local carriage--last-model-id model-str)
+          ;; Merge extracted token usage into the last usage snapshot to preserve
+          ;; bytes-in/bytes-out that are captured by our gptel-request wrapper.
+          (let* ((u0 (and (boundp 'carriage--last-usage) carriage--last-usage))
+                 (u (if (listp u0) (copy-sequence u0) nil)))
+            (when (plist-get usage :tokens-in)
+              (setq u (plist-put u :tokens-in (plist-get usage :tokens-in))))
+            (when (plist-get usage :tokens-out)
+              (setq u (plist-put u :tokens-out (plist-get usage :tokens-out))))
+            (setq-local carriage--last-usage u))
+          ;; Store cost as-is from pricing (may be nil / unknown).
+          ;; Add a conservative :known flag for UI renderers when not present.
+          (let* ((c (and (listp cost) (copy-sequence cost)))
+                 (tt (and (listp c) (plist-get c :cost-total-u))))
+            (when (and (listp c) (not (plist-member c :known)))
+              (setq c (plist-put c :known (and (integerp tt) (> tt 0)))))
+            (setq-local carriage--last-cost c))
+          (when (fboundp 'carriage-ui--invalidate-ml-cache)
+            (carriage-ui--invalidate-ml-cache))
+          (force-mode-line-update t)))
       (when (and (fboundp 'carriage-fingerprint-note-usage-and-cost)
-                 (or (plist-get usage :tokens-in) (plist-get usage :tokens-out)))
+                 (or (plist-get usage :tokens-in)
+                     (plist-get usage :tokens-out)
+                     (plist-get usage :bytes-in)
+                     (plist-get usage :bytes-out)))
         (ignore-errors
           (carriage-fingerprint-note-usage-and-cost usage 'gptel nil model-str)))
       (carriage-transport-gptel--finalize--insert-result-line
@@ -1275,22 +1322,6 @@ If MODEL is in \"backend[:provider]:model\" form, keep only the last segment."
                      s)))
         (when (and (stringp name) (not (string-empty-p name)))
           (intern name))))))
-
-(defun carriage-transport-gptel--model-string-from-info (info fallback-model)
-  "Return a stable model string from INFO or FALLBACK-MODEL."
-  (let* ((cand
-          (or (and (listp info)
-                   (or (plist-get info :model)
-                       (plist-get info :requested-model)
-                       (plist-get info :model-name)))
-              fallback-model))
-         (s (cond
-             ((symbolp cand) (symbol-name cand))
-             ((stringp cand) cand)
-             ((null cand) nil)
-             (t (format "%s" cand)))))
-    (when (and (stringp s) (not (string-empty-p (string-trim s))))
-      (string-trim s))))
 
 (defun carriage-transport-gptel--model-string-from-info (info fallback-model)
   "Return a stable model string from INFO or FALLBACK-MODEL."

@@ -578,6 +578,7 @@ Disabling this eliminates periodic redisplay work during active phases."
     toggle-files
     doc-scope-all
     doc-scope-last
+    req-cost
     doc-cost
     ;; report
     ;; patch
@@ -639,6 +640,8 @@ Recognized block symbols:
 - `toggle-map' — Project Map context toggle (begin_map).
 - `doc-scope-all' — select doc-context scope 'all.
 - `doc-scope-last' — select doc-context scope 'last.
+- `req-cost' — last request cost/usage (fallback: tokens → bytes).
+- `doc-cost' — document cost (sum of known per-request costs from result/fingerprint lines).
 - `toggle-visible' — include visible buffers.
 - `settings' — settings/menu button.
 carriage-ui--set-modeline-blocks
@@ -650,6 +653,7 @@ Unknown symbols are ignored."
                          (const :tag "Intent toggle" intent)
                          (const :tag "Request state indicator" state)
                          (const :tag "Apply/Dry-run status" apply-status)
+                         (const :tag "Request cost/usage (last request)" req-cost)
                          (const :tag "Context badge" context)
                          (const :tag "Patch counter" patch)
                          (const :tag "Apply last iteration button" all)
@@ -2208,6 +2212,44 @@ Uses pulse.el when available, otherwise temporary overlays."
          (ctx-ver (and (memq 'context blocks) (or carriage-ui--ctx-badge-version 0)))
          (apply-ver (and (memq 'apply-status blocks) (or carriage-ui--apply-badge-version 0)))
          (doc-cost-ver (and (memq 'doc-cost blocks) (or carriage-ui--doc-cost-version 0)))
+         ;; State help-echo changes must invalidate the cached modeline string, otherwise
+         ;; tooltips can become stale (force-mode-line-update alone is not enough).
+         (state-tt-ver (and (memq 'state blocks)
+                            (or (and (boundp 'carriage-ui--state-tooltip-version)
+                                     carriage-ui--state-tooltip-version)
+                                0)))
+         ;; HTTP/error details (captured by transport) must also invalidate cache
+         ;; so the [State] segment updates label/tooltip.
+         (http-code (and (memq 'state blocks)
+                         (boundp 'carriage--last-http-status)
+                         carriage--last-http-status))
+         (http-text (and (memq 'state blocks)
+                         (boundp 'carriage--last-http-status-text)
+                         carriage--last-http-status-text))
+         (be-err (and (memq 'state blocks)
+                      (boundp 'carriage--last-backend-error)
+                      carriage--last-backend-error))
+         ;; Last request cost/usage snapshot for req-cost block.
+         (req-cost-key
+          (and (memq 'req-cost blocks)
+               (list
+                (and (boundp 'carriage--last-cost)
+                     (listp carriage--last-cost)
+                     (plist-get carriage--last-cost :cost-total-u))
+                (and (boundp 'carriage--last-usage)
+                     (listp carriage--last-usage)
+                     (plist-get carriage--last-usage :tokens-in))
+                (and (boundp 'carriage--last-usage)
+                     (listp carriage--last-usage)
+                     (plist-get carriage--last-usage :tokens-out))
+                (and (boundp 'carriage--last-usage)
+                     (listp carriage--last-usage)
+                     (plist-get carriage--last-usage :bytes-in))
+                (and (boundp 'carriage--last-usage)
+                     (listp carriage--last-usage)
+                     (plist-get carriage--last-usage :bytes-out))
+                (and (boundp 'carriage--last-model-id)
+                     carriage--last-model-id))))
          ;; Avoid scanning buffers during redisplay: patch count must come from cache,
          ;; maintained asynchronously by `carriage-ui--patch-refresh-now'.
          (patch-count (and (memq 'patch blocks)
@@ -2223,8 +2265,8 @@ Uses pulse.el when available, otherwise temporary overlays."
          (branch-t (and (memq 'branch blocks) carriage-ui--branch-cache-time))
          (abortp (and (boundp 'carriage--abort-handler) carriage--abort-handler)))
     (list uicons
-          state spin
-          ctx-ver apply-ver doc-cost-ver
+          state spin state-tt-ver http-code http-text be-err
+          ctx-ver apply-ver doc-cost-ver req-cost-key
           patch-count has-last abortp blocks
           (and (boundp 'carriage-mode-intent)  carriage-mode-intent)
           (and (boundp 'carriage-mode-suite)   carriage-mode-suite)
@@ -2370,7 +2412,14 @@ TTY / icons disabled: keep text label fallback."
 This segment represents *request/transport* state."
   (let* ((st (let ((s (and (boundp 'carriage--ui-state) carriage--ui-state)))
                (if (symbolp s) s 'idle)))
-         (label (carriage-ui--state-label st))
+         (http-code (and (boundp 'carriage--last-http-status) carriage--last-http-status))
+         (http-text (and (boundp 'carriage--last-http-status-text) carriage--last-http-status-text))
+         (be-err (and (boundp 'carriage--last-backend-error) carriage--last-backend-error))
+         (mid (and (boundp 'carriage--last-model-id) carriage--last-model-id))
+         (label
+          (if (and (eq st 'error) http-code)
+              (format "Error: %s" http-code)
+            (carriage-ui--state-label st)))
          (txt (format "%s%s"
                       label
                       (if (and carriage-ui-enable-spinner
@@ -2383,12 +2432,33 @@ This segment represents *request/transport* state."
                  ('done 'carriage-ui-state-success-face)
                  ('error 'carriage-ui-state-error-face)
                  (_ nil)))
-         (help (and (boundp 'carriage--ui-state-tooltip) carriage--ui-state-tooltip)))
+         (help0 (and (boundp 'carriage--ui-state-tooltip) carriage--ui-state-tooltip))
+         (help-http
+          (when (or http-code http-text be-err mid)
+            (string-join
+             (delq nil
+                   (list
+                    (and http-code
+                         (format "HTTP: %s%s"
+                                 http-code
+                                 (if (and (stringp http-text) (not (string-empty-p http-text)))
+                                     (format " — %s" http-text)
+                                   "")))
+                    (and (stringp be-err) (not (string-empty-p be-err))
+                         (format "Backend: %s" be-err))
+                    (and (stringp mid) (not (string-empty-p mid))
+                         (format "Model: %s" mid))))
+             "\n")))
+         (help
+          (string-join (delq nil (list help0 help-http)) "\n")))
     (cond
-     ((and face help) (propertize txt 'face face 'help-echo help))
-     (face            (propertize txt 'face face))
-     (help            (propertize txt 'help-echo help))
-     (t               txt))))
+     ((and face (stringp help) (not (string-empty-p help)))
+      (propertize txt 'face face 'help-echo help))
+     (face
+      (propertize txt 'face face))
+     ((and (stringp help) (not (string-empty-p help)))
+      (propertize txt 'help-echo help))
+     (t txt))))
 
 (defun carriage-ui--apply--diag->line (m)
   "Format a single diagnostic message plist M for tooltip."
@@ -2773,11 +2843,79 @@ If cache is empty/uninitialized, schedule an async refresh and show a placeholde
                        (fboundp 'carriage-ui-doc-cost-schedule-refresh)
                        (not (timerp carriage-ui--doc-cost-refresh-timer)))
               (ignore-errors (carriage-ui-doc-cost-schedule-refresh 0.05))))
-         (money (carriage-ui--format-money-suffix total-u))
+         ;; Avoid misleading "0.00₽" when we have no known costs yet.
+         (money
+          (cond
+           ((not ts) "—")
+           ((<= (or known 0) 0) "—")
+           (t (carriage-ui--format-money-suffix total-u))))
          (lbl (format "[%s]" money))
          (tip (format "Document cost (known only)\nknown=%s unknown=%s\nClick to refresh"
                       (or known 0) (or unknown 0))))
     (carriage-ui--ml-button lbl #'carriage-ui-doc-cost-refresh tip)))
+
+(defun carriage-ui--req-cost--label ()
+  "Return short label for last request cost; fallback to tokens/bytes when unknown."
+  (let* ((cost (and (boundp 'carriage--last-cost) carriage--last-cost))
+         (usage (and (boundp 'carriage--last-usage) carriage--last-usage))
+         (known (and (listp cost)
+                     (or (plist-get cost :known)
+                         (plist-get cost :cost-known))))
+         (total-u (and (listp cost) (plist-get cost :cost-total-u)))
+         (tin (and (listp usage) (plist-get usage :tokens-in)))
+         (tout (and (listp usage) (plist-get usage :tokens-out)))
+         (bin (and (listp usage) (plist-get usage :bytes-in)))
+         (bout (and (listp usage) (plist-get usage :bytes-out))))
+    (cond
+     ((and known (integerp total-u) (> total-u 0))
+      (format "Req:%s" (carriage-ui--format-money-suffix total-u)))
+     ((or (integerp tin) (integerp tout))
+      (format "tok:%s/%s"
+              (if (integerp tin) tin "—")
+              (if (integerp tout) tout "—")))
+     ((or (integerp bin) (integerp bout))
+      (format "bytes:%s/%s"
+              (if (integerp bin) bin "—")
+              (if (integerp bout) bout "—")))
+     (t "Req:—"))))
+
+(defun carriage-ui--req-cost--tooltip ()
+  "Build tooltip for last request cost/usage segment (best-effort)."
+  (let* ((cost (and (boundp 'carriage--last-cost) carriage--last-cost))
+         (usage (and (boundp 'carriage--last-usage) carriage--last-usage))
+         (mid (and (boundp 'carriage--last-model-id) carriage--last-model-id))
+         (known (and (listp cost)
+                     (or (plist-get cost :known)
+                         (plist-get cost :cost-known))))
+         (total-u (and (listp cost) (plist-get cost :cost-total-u)))
+         (tin (and (listp usage) (plist-get usage :tokens-in)))
+         (tout (and (listp usage) (plist-get usage :tokens-out)))
+         (bin (and (listp usage) (plist-get usage :bytes-in)))
+         (bout (and (listp usage) (plist-get usage :bytes-out))))
+    (string-join
+     (delq nil
+           (list
+            "Last request cost/usage"
+            (and (stringp mid) (not (string-empty-p mid)) (format "Model: %s" mid))
+            (format "Cost known: %s" (if known "yes" "no"))
+            (format "Cost total: %s" (if (integerp total-u) (carriage-ui--format-money-suffix total-u) "—"))
+            (format "Tokens: in=%s out=%s"
+                    (if (integerp tin) tin "—")
+                    (if (integerp tout) tout "—"))
+            (format "Bytes: in=%s out=%s"
+                    (if (integerp bin) bin "—")
+                    (if (integerp bout) bout "—"))
+            (when (not known)
+              "Note: token usage may be unavailable in streaming mode; fallback uses tokens/bytes when possible.")))
+     "\n")))
+
+(defun carriage-ui--ml-seg-req-cost ()
+  "Build last request cost/usage segment (money → tokens → bytes → em dash)."
+  (let* ((lbl (carriage-ui--req-cost--label))
+         (tip (carriage-ui--req-cost--tooltip)))
+    (propertize lbl
+                'help-echo (and (stringp tip) (not (string-empty-p tip)) tip)
+                'mouse-face 'mode-line-highlight)))
 
 (defun carriage-ui--ml-render-block (blk)
   "Dispatch builder for a single modeline block BLK symbol."
@@ -2789,6 +2927,7 @@ If cache is empty/uninitialized, schedule an async refresh and show a placeholde
     ('intent        (carriage-ui--ml-seg-intent))
     ('state         (carriage-ui--ml-seg-state))
     ('apply-status  (carriage-ui--ml-seg-apply-status))
+    ('req-cost      (carriage-ui--ml-seg-req-cost))
     ('doc-cost      (carriage-ui--ml-seg-doc-cost))
     ('context       (carriage-ui--ml-seg-context))
     ('patch         (carriage-ui--ml-seg-patch))
@@ -2870,6 +3009,10 @@ Streaming may update tooltip text very frequently. This setting throttles
 (defvar-local carriage-ui--tooltip-last-update 0.0
   "Last time (float seconds) we forced mode-line update due to tooltip changes.")
 
+(defvar-local carriage-ui--state-tooltip-version 0
+  "Monotonic version for state tooltip changes.
+Used to invalidate the cached modeline string so help-echo updates are visible.")
+
 (defvar-local carriage--ui-state-tooltip nil
   "Cached tooltip string for current UI state (help-echo for [STATE]).")
 
@@ -2912,6 +3055,8 @@ This avoids heavy redisplay churn during streaming; we only tick the line (throt
               (<= min 0)
               (>= (- now last) min))
       (setq carriage-ui--tooltip-last-update now)
+      (setq carriage-ui--state-tooltip-version
+            (1+ (or carriage-ui--state-tooltip-version 0)))
       (force-mode-line-update))))
 
 (defun carriage-ui--i18n (key &rest args)
@@ -5971,227 +6116,6 @@ Robustness:
            (apply orig args)
          nil)))))
 
-(defun carriage-toggle-include-plain-text-context ()
-  "Toggle inclusion of plain text (outside typed blocks) in payload for this buffer.
-Updates context badge and refreshes the modeline."
-  (interactive)
-  (setq-local carriage-mode-include-plain-text-context
-              (not (and (boundp 'carriage-mode-include-plain-text-context)
-                        carriage-mode-include-plain-text-context)))
-  (when (fboundp 'carriage-ui--ctx-invalidate)
-    (ignore-errors (carriage-ui--ctx-invalidate)))
-  (when (fboundp 'carriage-ui--invalidate-ml-cache)
-    (ignore-errors (carriage-ui--invalidate-ml-cache)))
-  (force-mode-line-update t))
-
-;; --- Final UI overrides: pricing fallback + HTTP error status ----------------
-;; Keep redisplay/modeline O(1): read cached buffer-local fields only.
-
-(defun carriage-ui--format-cost-or-usage ()
-  "Return short cost label.
-
-Policy:
-- Show money only when we have a known, non-zero cost.
-- Otherwise (unknown/zero), prefer showing tokens; if tokens are missing, show bytes."
-  (let* ((cost (and (boundp 'carriage--last-cost) carriage--last-cost))
-         (usage (and (boundp 'carriage--last-usage) carriage--last-usage))
-         (known (and (listp cost)
-                     (or (plist-get cost :known)
-                         (plist-get cost :cost-known))))
-         (total (and (listp cost) (plist-get cost :cost-total-u)))
-         (tin (and (listp usage) (plist-get usage :tokens-in)))
-         (tout (and (listp usage) (plist-get usage :tokens-out)))
-         (bin (and (listp usage) (plist-get usage :bytes-in)))
-         (bout (and (listp usage) (plist-get usage :bytes-out)))
-         (has-tokens (or (integerp tin) (integerp tout)))
-         (has-bytes (or (integerp bin) (integerp bout))))
-    (cond
-     ((and known (integerp total) (> total 0))
-      (if (fboundp 'carriage-pricing-format-money)
-          (carriage-pricing-format-money total)
-        (format "cost:%s" total)))
-     (has-tokens
-      (format "tok:%s/%s"
-              (if (integerp tin) tin "—")
-              (if (integerp tout) tout "—")))
-     (has-bytes
-      (format "bytes:%s/%s"
-              (if (integerp bin) bin "—")
-              (if (integerp bout) bout "—")))
-     (t "—"))))
-
-
-(defun carriage-ui--cost-tooltip ()
-  "Build tooltip for cost/usage segment."
-  (let* ((cost (and (boundp 'carriage--last-cost) carriage--last-cost))
-         (usage (and (boundp 'carriage--last-usage) carriage--last-usage))
-         (known (and (listp cost)
-                     (or (plist-get cost :known)
-                         (plist-get cost :cost-known))))
-         (total (and (listp cost) (plist-get cost :cost-total-u)))
-         (mid (and (boundp 'carriage--last-model-id) carriage--last-model-id))
-         (tin (and (listp usage) (plist-get usage :tokens-in)))
-         (tout (and (listp usage) (plist-get usage :tokens-out)))
-         (bin (and (listp usage) (plist-get usage :bytes-in)))
-         (bout (and (listp usage) (plist-get usage :bytes-out)))
-         (has-tokens (or (integerp tin) (integerp tout)))
-         (has-bytes (or (integerp bin) (integerp bout)))
-         ;; Mirrors `carriage-ui--format-cost-or-usage'.
-         (show-money (and known (integerp total) (> total 0))))
-    (string-join
-     (delq nil
-           (list
-            (and (stringp mid) (not (string-empty-p mid)) (format "Model: %s" mid))
-            (if show-money
-                (format "Cost: %s" total)
-              (concat
-               "Cost: unknown"
-               (cond
-                (has-tokens " (fallback: tokens)")
-                (has-bytes  " (fallback: bytes)")
-                (t          ""))))
-            (and (or tin tout)
-                 (format "Tokens: in=%s out=%s"
-                         (if (integerp tin) tin "—")
-                         (if (integerp tout) tout "—")))
-            (and (or bin bout)
-                 (format "Bytes: in=%s out=%s"
-                         (if (integerp bin) bin "—")
-                         (if (integerp bout) bout "—")))))
-     "\n")))
-
-
-
-(defun carriage-ui--ml-seg-cost ()
-  "Modeline segment: cost (with tokens/bytes fallback)."
-  (let* ((lbl (carriage-ui--format-cost-or-usage))
-         (tip (carriage-ui--cost-tooltip)))
-    (propertize lbl
-                'help-echo (and (stringp tip) (not (string-empty-p tip)) tip)
-                'mouse-face 'mode-line-highlight)))
-
-(defun carriage-ui--status-label ()
-  "Short status label for modeline, including HTTP code on errors."
-  (let* ((st (and (boundp 'carriage--ui-state) carriage--ui-state))
-         (code0 (and (boundp 'carriage--last-http-status) carriage--last-http-status))
-         (txt0 (and (boundp 'carriage--last-http-status-text) carriage--last-http-status-text))
-         (be0  (and (boundp 'carriage--last-backend-error) carriage--last-backend-error))
-         (code
-          (cond
-           ((integerp code0) (number-to-string code0))
-           ((and (stringp code0) (not (string-empty-p code0))) code0)
-           ;; Best-effort fallback: sometimes code is only present in status/error text.
-           ((and (stringp txt0)
-                 (string-match "\\b\\([0-9][0-9][0-9]\\)\\b" txt0))
-            (match-string 1 txt0))
-           ((and (stringp be0)
-                 (string-match "\\b\\([0-9][0-9][0-9]\\)\\b" be0))
-            (match-string 1 be0))
-           (t nil))))
-    (cond
-     ((and (eq st 'error) (stringp code) (not (string-empty-p code)))
-      (format "Error: %s" code))
-     ((eq st 'error) "Error")
-     ((eq st 'sending) "Sending")
-     ((eq st 'streaming) "Streaming")
-     ((eq st 'reasoning) "Reasoning")
-     ((eq st 'idle) "Idle")
-     (st (format "%s" st))
-     (t "—"))))
-
-
-
-(defun carriage-ui--status-tooltip ()
-  "Tooltip for status segment: HTTP code/text + backend message."
-  (let* ((code0 (and (boundp 'carriage--last-http-status) carriage--last-http-status))
-         (code (cond
-                ((integerp code0) (number-to-string code0))
-                ((stringp code0) code0)
-                (t nil)))
-         (txt  (and (boundp 'carriage--last-http-status-text) carriage--last-http-status-text))
-         (be   (and (boundp 'carriage--last-backend-error) carriage--last-backend-error))
-         (mid  (and (boundp 'carriage--last-model-id) carriage--last-model-id)))
-    (string-join
-     (delq nil
-           (list
-            (and (stringp code)
-                 (not (string-empty-p code))
-                 (format "HTTP: %s%s"
-                         code
-                         (if (and (stringp txt) (not (string-empty-p txt)))
-                             (format " — %s" txt)
-                           "")))
-            ;; If HTTP code is missing but we still have a status text, show it anyway.
-            (and (or (null code) (and (stringp code) (string-empty-p code)))
-                 (stringp txt) (not (string-empty-p txt))
-                 (format "HTTP: %s" txt))
-            (and (stringp be) (not (string-empty-p be)) (format "Backend: %s" be))
-            (and (stringp mid) (not (string-empty-p mid)) (format "Model: %s" mid))))
-     "\n")))
-
-
-(defun carriage-ui--ml-seg-status ()
-  "Modeline segment: status with HTTP error tooltip."
-  (let* ((lbl (carriage-ui--status-label))
-         (tip (carriage-ui--status-tooltip)))
-    (propertize lbl
-                'help-echo (and (stringp tip) (not (string-empty-p tip)) tip)
-                'mouse-face 'mode-line-highlight)))
-
-;; Ensure modeline cache reacts to status/cost updates (still O(1)).
-(defun carriage-ui--ml-cache-key ()
-  "Compute modeline cache key (O(1), no scans/IO).
-Includes ctx badge version, status/error fields and cost/usage label."
-  (let* ((uicons (and (fboundp 'carriage-ui--icons-available-p)
-                      (carriage-ui--icons-available-p)))
-         (blocks (if (and (boundp 'carriage-ui-modeline-blocks)
-                          (listp carriage-ui-modeline-blocks)
-                          carriage-ui-modeline-blocks)
-                     carriage-ui-modeline-blocks
-                   (and (boundp 'carriage-ui--modeline-default-blocks)
-                        carriage-ui--modeline-default-blocks)))
-         (state  (and (boundp 'carriage--ui-state) carriage--ui-state))
-         (spin   (and (boundp 'carriage-ui-enable-spinner) carriage-ui-enable-spinner
-                      (memq state '(sending streaming dispatch waiting reasoning))
-                      (fboundp 'carriage-ui--spinner-char)
-                      (carriage-ui--spinner-char)))
-         (ctx-ver (and (memq 'context blocks)
-                       (boundp 'carriage-ui--ctx-badge-version)
-                       carriage-ui--ctx-badge-version))
-         (patch-count (and (memq 'patch blocks)
-                           (not (memq state '(sending streaming dispatch waiting reasoning)))
-                           (numberp (and (boundp 'carriage-ui--patch-count-cache)
-                                         carriage-ui--patch-count-cache))
-                           carriage-ui--patch-count-cache))
-         ;; Include error and cost label (cheap) so changes invalidate cached modeline string.
-         (http-code (and (boundp 'carriage--last-http-status) carriage--last-http-status))
-         (http-txt  (and (boundp 'carriage--last-http-status-text) carriage--last-http-status-text))
-         (be        (and (boundp 'carriage--last-backend-error) carriage--last-backend-error))
-         (costlbl   (ignore-errors (carriage-ui--format-cost-or-usage))))
-    (list uicons
-          state spin
-          ctx-ver patch-count
-          http-code http-txt be
-          costlbl
-          blocks
-          (and (boundp 'carriage-mode-intent) carriage-mode-intent)
-          (and (boundp 'carriage-mode-suite) carriage-mode-suite)
-          (and (boundp 'carriage-mode-model) carriage-mode-model)
-          (and (boundp 'carriage-mode-backend) carriage-mode-backend)
-          (and (boundp 'carriage-mode-provider) carriage-mode-provider)
-          (and (boundp 'carriage-apply-engine) carriage-apply-engine)
-          (and (boundp 'carriage-git-branch-policy) carriage-git-branch-policy)
-          (and (boundp 'carriage-mode-include-gptel-context)
-               carriage-mode-include-gptel-context)
-          (and (boundp 'carriage-mode-include-doc-context)
-               carriage-mode-include-doc-context)
-          (and (boundp 'carriage-mode-include-visible-context)
-               carriage-mode-include-visible-context)
-          (and (boundp 'carriage-mode-include-patched-files)
-               carriage-mode-include-patched-files)
-          (and (boundp 'carriage-doc-context-scope) carriage-doc-context-scope)
-          (and (boundp 'carriage-ui-context-badge-refresh-interval)
-               carriage-ui-context-badge-refresh-interval))))
 
 (provide 'carriage-ui)
 ;;; carriage-ui.el ends here
