@@ -1775,5 +1775,56 @@ BYTES-IN is the prompt byte size estimate (may be nil)."
       (advice-add 'gptel-request :around
                   #'carriage-transport-gptel--advice-gptel-request))))
 
+;;;###autoload
+(defun carriage-transport-gptel-emergency-cleanup (&optional kill-all reason)
+  "Emergency cleanup of GPTel processes/state (best-effort).
+
+When KILL-ALL is non-nil, delete all live processes whose names start with
+\"gptel-curl\" and kill their process buffers. Also clears `gptel--request-alist'
+when it exists.
+
+REASON is an optional short string used for diagnostics/logging.
+
+Return a plist:
+  (:killed N :killed-buffers M :cleared-request-alist BOOL :reason REASON)
+
+WARNING:
+This is a global cleanup and may affect non-Carriage GPTel requests."
+  (interactive "P")
+  (let ((killed 0)
+        (killed-bufs 0)
+        (cleared nil)
+        (why (cond
+              ((stringp reason) reason)
+              (reason (format "%s" reason))
+              (t nil))))
+    (condition-case _e
+        (when kill-all
+          (dolist (p (process-list))
+            (when (and (processp p)
+                       (memq (process-status p) '(run open connect))
+                       (string-prefix-p "gptel-curl" (process-name p)))
+              (let ((pb (process-buffer p)))
+                (ignore-errors (delete-process p))
+                (setq killed (1+ killed))
+                (when (buffer-live-p pb)
+                  (ignore-errors (kill-buffer pb))
+                  (setq killed-bufs (1+ killed-bufs))))))
+          (when (boundp 'gptel--request-alist)
+            (setq gptel--request-alist nil)
+            (setq cleared t)))
+      (error nil))
+    (ignore-errors
+      (when (fboundp 'carriage-log)
+        (carriage-log "Transport[gptel] emergency-cleanup kill-all=%s killed=%d killed-bufs=%d cleared-request-alist=%s reason=%s"
+                      (if kill-all "t" "nil")
+                      killed killed-bufs
+                      (if cleared "t" "nil")
+                      (or why "-"))))
+    (list :killed killed
+          :killed-buffers killed-bufs
+          :cleared-request-alist (and cleared t)
+          :reason why)))
+
 (provide 'carriage-transport-gptel)
 ;;; carriage-transport-gptel.el ends here

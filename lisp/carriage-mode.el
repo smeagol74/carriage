@@ -3602,6 +3602,100 @@ If no handler is present, stops UI spinner and reports no active request."
         (carriage-ui-set-state 'idle))
       (message "Нет активного запроса")))))
 
+;;;###autoload
+(defun carriage-reset (&optional aggressive)
+  "Reset Carriage state in the current buffer (best-effort).
+
+When AGGRESSIVE (prefix arg), also perform a global GPTel cleanup:
+- kill all live processes whose names start with \"gptel-curl\"
+- kill their process buffers
+- clear `gptel--request-alist' when it exists
+
+This command is intended as an emergency recovery tool when the GPTel backend
+gets into a broken/hung state and subsequent requests fail until Emacs restart."
+  (interactive "P")
+  (let ((buf (current-buffer))
+        (killed-procs 0)
+        (killed-bufs 0)
+        (cleared-request-alist nil)
+        (err nil))
+    (condition-case e
+        (progn
+          ;; Cancel any async send-prep / warmup tasks (best-effort).
+          (when (fboundp 'carriage-mode--send-prepare-cancel)
+            (ignore-errors (carriage-mode--send-prepare-cancel)))
+          (when (and (fboundp 'carriage--send-prep-cancel)
+                     (boundp 'carriage--send-prep-job-id)
+                     (integerp carriage--send-prep-job-id))
+            (ignore-errors (carriage--send-prep-cancel carriage--send-prep-job-id)))
+
+          ;; Abort current activity if any (UI + transport).
+          (ignore-errors (carriage-abort-current))
+
+          ;; Reset streaming state/timers and UI caches.
+          (when (fboundp 'carriage-stream-reset)
+            (ignore-errors (carriage-stream-reset (copy-marker (point) t))))
+          (when (fboundp 'carriage-ui-apply-reset)
+            (ignore-errors (carriage-ui-apply-reset)))
+          (when (fboundp 'carriage-ui--reset-context-cache)
+            (ignore-errors (carriage-ui--reset-context-cache)))
+          (when (fboundp 'carriage-ui--ctx-invalidate)
+            (ignore-errors (carriage-ui--ctx-invalidate)))
+          (when (fboundp 'carriage-ui--invalidate-ml-cache)
+            (ignore-errors (carriage-ui--invalidate-ml-cache)))
+
+          ;; Stop spinners/preloader and force UI back to idle.
+          (when (fboundp 'carriage-ui--spinner-stop)
+            (ignore-errors (carriage-ui--spinner-stop t)))
+          (when (fboundp 'carriage--preloader-stop)
+            (ignore-errors (carriage--preloader-stop)))
+          (when (fboundp 'carriage-ui-set-state)
+            (ignore-errors (carriage-ui-set-state 'idle)))
+
+          ;; Invalidate project-map cache (safe; avoids reusing a broken state).
+          (when (fboundp 'carriage-context-project-map-invalidate)
+            (ignore-errors (carriage-context-project-map-invalidate)))
+
+          ;; Aggressive GPTel cleanup (global; may affect non-Carriage GPTel requests).
+          (when aggressive
+            ;; Prefer transport helper when available (keeps behavior/logging consistent).
+            (cond
+             ((fboundp 'carriage-transport-gptel-emergency-cleanup)
+              (ignore-errors
+                (let* ((res (carriage-transport-gptel-emergency-cleanup t "carriage-reset")))
+                  (when (listp res)
+                    (setq killed-procs (or (plist-get res :killed) 0))
+                    (setq killed-bufs (or (plist-get res :killed-buffers) 0))
+                    (setq cleared-request-alist (and (plist-get res :cleared-request-alist) t))))))
+             (t
+              (when (require 'gptel-request nil t)
+                (when (fboundp 'gptel-abort)
+                  (ignore-errors (gptel-abort buf)))
+                (dolist (p (process-list))
+                  (when (and (processp p)
+                             (memq (process-status p) '(run open connect))
+                             (string-prefix-p "gptel-curl" (process-name p)))
+                    (let ((pb (process-buffer p)))
+                      (ignore-errors (delete-process p))
+                      (setq killed-procs (1+ killed-procs))
+                      (when (buffer-live-p pb)
+                        (ignore-errors (kill-buffer pb))
+                        (setq killed-bufs (1+ killed-bufs))))))
+                (when (boundp 'gptel--request-alist)
+                  (setq gptel--request-alist nil)
+                  (setq cleared-request-alist t)))))))
+      (error
+       (setq err (error-message-string e))))
+    (cond
+     (err
+      (message "Carriage reset: error: %s" err))
+     (aggressive
+      (message "Carriage reset (aggressive): killed-procs=%d killed-bufs=%d cleared-request-alist=%s"
+               killed-procs killed-bufs (if cleared-request-alist "t" "nil")))
+     (t
+      (message "Carriage reset: done"))))
+  t)
+
 (defun carriage-register-abort-handler (fn)
   "Register buffer-local abort handler FN and return an unregister lambda.
 FN must be a zero-argument function that cancels the ongoing activity."
