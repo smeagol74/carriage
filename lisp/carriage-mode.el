@@ -2540,13 +2540,14 @@ May include :context-text and :context-target per v1.1."
            (payload (carriage--sanitize-payload-for-llm payload-raw))
            (target (carriage--context-target))
            (ctx-text (carriage--context-collect-and-format buffer target))
+           (org-note (ignore-errors (carriage--org-structure--prompt-note buffer)))
            (project-state-note
             (concat
              "Project-state policy:\n"
              "- Treat begin_context, begin_map, and applied patch history as the current project state.\n"
              "- Do NOT generate :op create for a file that already exists in that current project state.\n"
              "- For an existing file, use patch/sre/aibo instead of create.\n"))
-           (res (list :payload payload)))
+           (res (list :payload payload :org-structure-note org-note)))
       (setq ctx-text
             (if (and (stringp ctx-text) (not (string-empty-p ctx-text)))
                 (concat project-state-note "\n" ctx-text)

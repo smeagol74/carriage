@@ -541,8 +541,8 @@ Rules (high level):
 (defun carriage-typedblocks--maybe-append-org-structure-hint (text)
   "Append Org structure hint to TEXT when enabled; avoid duplicates via sentinel."
   (if (and (stringp text)
-           (boundp 'carriage-mode-typedblocks-structure-hint)
-           carriage-mode-typedblocks-structure-hint
+           (boundp 'carriage-mode-org-structure-hint)
+           carriage-mode-org-structure-hint
            (derived-mode-p 'org-mode)
            (not (string-match-p "CARRIAGE_ORG_STRUCTURE_HINT:" text)))
       (concat text "\n\n" (carriage-typedblocks--org-structure-hint-fragment))
@@ -600,8 +600,8 @@ Policy:
 
 (defun carriage-typedblocks--org-structure-hint-text ()
   "Return strict Org formatting rules for the model, or nil when not applicable."
-  (when (and (boundp 'carriage-mode-typedblocks-structure-hint)
-             carriage-mode-typedblocks-structure-hint
+  (when (and (boundp 'carriage-mode-org-structure-hint)
+             carriage-mode-org-structure-hint
              (derived-mode-p 'org-mode))
     (let* ((lvl (carriage-typedblocks--org-target-heading-level))
            (stars (make-string lvl ?*)))

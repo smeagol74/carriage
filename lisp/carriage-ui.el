@@ -2089,7 +2089,7 @@ Important: the cache key includes label's text properties to ensure visual updat
                   ('structure
                    (cond
                     ((fboundp 'all-the-icons-material)
-                     (all-the-icons-material "line_weight"
+                     (all-the-icons-material "device_hub"
                                              :height carriage-mode-icon-height
                                              :v-adjust (- carriage-mode-icon-v-adjust 0.12)
                                              :face fplist))
@@ -2792,11 +2792,23 @@ Performance:
 
 (defun carriage-ui--ml-seg-toggle-typed ()
   "Build toggle for including \"Typed Blocks (v1)\" guidance in Ask/Hybrid prompts."
-  (let* ((_ (require 'carriage-i18n nil t))
+  (let* ((intent (and (boundp 'carriage-mode-intent) carriage-mode-intent))
+         (_ (require 'carriage-i18n nil t))
          (help "Toggle guidance asking the model to wrap key information into typed blocks (Ask/Hybrid)"))
-    (carriage-ui--toggle "Typed" 'carriage-mode-typedblocks-structure-hint
-                         #'carriage-toggle-typedblocks-structure-hint
-                         help 'typed)))
+    ;; In Code intent typedblocks guidance is irrelevant (patch-only output); render as disabled.
+    (if (eq intent 'Code)
+        (let* ((lbl (if (carriage-ui--icons-available-p)
+                        (carriage-ui--toggle-icon 'typed nil)
+                      (propertize "Typed" 'face 'carriage-ui-muted-face)))
+               (s (copy-sequence lbl)))
+          (add-text-properties
+           0 (length s)
+           (list 'help-echo "Typed Blocks guidance disabled in Intent=Code (patch-only). Switch to Ask/Hybrid to use it.")
+           s)
+          s)
+      (carriage-ui--toggle "Typed" 'carriage-mode-typedblocks-structure-hint
+                           #'carriage-toggle-typedblocks-structure-hint
+                           help 'typed))))
 
 (defun carriage-ui--ml-seg-doc-scope-all ()
   "Build button to select 'all doc-context scope."
@@ -6261,7 +6273,8 @@ Must not break nerd-icons/all-the-icons glyph properties."
 
 (defun carriage-ui--ml-seg-structure ()
   "Build modeline segment for Org structure compliance toggle."
-  (let* ((_ (require 'carriage-i18n nil t))
+  (let* ((intent (and (boundp 'carriage-mode-intent) carriage-mode-intent))
+         (_ (require 'carriage-i18n nil t))
          (help
           (string-join
            '("Соблюдать структуру (Org)"
@@ -6273,15 +6286,28 @@ Must not break nerd-icons/all-the-icons glyph properties."
              ""
              "mouse-1: переключить")
            "\n")))
-    ;; Render like other toggles (Typed/Map/Plain): icon-only in GUI, text in TTY.
-    ;; ON  -> accent-blue (same as other context toggles)
-    ;; OFF -> muted grey, without breaking icon glyph properties.
-    (carriage-ui--toggle
-     "Struct"
-     'carriage-mode-org-structure-hint
-     #'carriage-toggle-org-structure-hint
-     help
-     'structure)))
+    ;; Policy: in Intent=Code this toggle is effectively disabled (Code requires patch-only output).
+    ;; Render as a disabled (non-clickable) muted icon/label, similar to Typed toggle.
+    (if (eq intent 'Code)
+        (let* ((lbl (if (carriage-ui--icons-available-p)
+                        (carriage-ui--toggle-icon 'structure nil)
+                      (propertize "Struct" 'face 'carriage-ui-muted-face)))
+               (s (copy-sequence lbl)))
+          (add-text-properties
+           0 (length s)
+           (list 'help-echo
+                 "Соблюдать структуру отключено в Intent=Code (patch-only). Переключитесь на Ask/Hybrid, чтобы использовать этот режим.")
+           s)
+          s)
+      ;; Render like other toggles (Typed/Map/Plain): icon-only in GUI, text in TTY.
+      ;; ON  -> accent-blue (same as other context toggles)
+      ;; OFF -> muted grey, without breaking icon glyph properties.
+      (carriage-ui--toggle
+       "Struct"
+       'carriage-mode-org-structure-hint
+       #'carriage-toggle-org-structure-hint
+       help
+       'structure))))
 
 (provide 'carriage-ui)
 ;;; carriage-ui.el ends here

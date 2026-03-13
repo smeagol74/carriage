@@ -307,11 +307,17 @@ CTX may contain keys like :payload, :context-text, :context-target, :delim, :fil
                         do (signal (carriage-error-symbol 'MODE_E_DISPATCH)
                                    (list (format "Missing prompt fragment for op: %s" op)))))
               (intent-note (carriage--resolve-intent-fragment intent ctx))
+              (org-note (plist-get ctx :org-structure-note))
               (sys-core (carriage--join-nonempty
                          (list (carriage--suite-guardrails ops)
                                (mapconcat #'identity fragments "\n"))
                          "\n"))
-              (base (carriage--join-nonempty (list sys-core intent-note) "\n"))
+              ;; Structure hint conflicts with Code intent (patch-only output), so ignore it there.
+              (base (carriage--join-nonempty
+                     (list (and (not (eq intent 'Code)) org-note)
+                           sys-core
+                           intent-note)
+                     "\n"))
               (system (if (and (eq ctx-target 'system)
                                (stringp ctx-text) (not (string-empty-p ctx-text)))
                           (concat base "\n" ctx-text)
