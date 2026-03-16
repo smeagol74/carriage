@@ -1863,7 +1863,7 @@ SOURCE is used only for source classification maps."
   :prefix "carriage-context-")
 
 (defcustom carriage-context-p1-defaults
-  '(:max-files 100 :max-bytes 1048576)
+  '(:max-files 200 :max-bytes 2097152)
   "Default limits for P1-core profile (small, focused context).
 Keys: :max-files (int), :max-bytes (int, bytes)."
   :type '(plist :key-type (choice (const :max-files) (const :max-bytes))
@@ -1871,7 +1871,7 @@ Keys: :max-files (int), :max-bytes (int, bytes)."
   :group 'carriage-context-profile)
 
 (defcustom carriage-context-p3-defaults
-  '(:max-files 400 :max-bytes 4194304)
+  '(:max-files 800 :max-bytes 8388608)
   "Default limits for P3-debug profile (extended, opt-in).
 Keys: :max-files (int), :max-bytes (int, bytes)."
   :type '(plist :key-type (choice (const :max-files) (const :max-bytes))

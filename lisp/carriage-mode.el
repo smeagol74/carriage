@@ -472,11 +472,11 @@ and is subject to standard context limits and caching."
   :type '(choice (const system) (const user))
   :group 'carriage)
 
-(defcustom carriage-mode-context-max-files 100
+(defcustom carriage-mode-context-max-files 200
   "Max number of files to include from context sources."
   :type 'integer :group 'carriage)
 
-(defcustom carriage-mode-context-max-total-bytes 1048576
+(defcustom carriage-mode-context-max-total-bytes 2097152
   "Max total bytes of file contents included from context sources."
   :type 'integer :group 'carriage)
 
