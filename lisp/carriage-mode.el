@@ -1135,6 +1135,19 @@ Choose a visible face for your theme; 'shadow can be too dim."
       carriage--preloader-frames-unicode
     carriage--preloader-frames-ascii))
 
+(defun carriage--preloader--newline-hidden-p (nlpos)
+  "Return non-nil when newline at NLPOS is visually hidden by an overlay."
+  (when (and (numberp nlpos)
+             (>= nlpos (point-min))
+             (< nlpos (point-max))
+             (eq (char-after nlpos) ?\n))
+    (or (get-char-property nlpos 'invisible)
+        (get-char-property nlpos 'display)
+        (cl-some (lambda (ov)
+                   (or (overlay-get ov 'invisible)
+                       (overlay-get ov 'display)))
+                 (overlays-at nlpos)))))
+
 (defun carriage--preloader--render (pos)
   "Render preloader at POS, updating overlay text."
   ;; Ensure overlay variable is bound and overlay exists for this buffer.
@@ -1144,11 +1157,22 @@ Choose a visible face for your theme; 'shadow can be too dim."
   (let* ((frames (carriage--preloader-frames))
          (n (length frames))
          (i (mod (or carriage--preloader-index 0) (max 1 n)))
-         (frame (aref frames i)))
+         (frame (aref frames i))
+         ;; When the previous line-break is visually hidden by a fold overlay
+         ;; (e.g., doc-state summary display that includes the trailing newline),
+         ;; our spinner anchored at BOL would appear "above" the folded line.
+         ;; Add a leading newline in that case to keep spinner strictly below.
+         (need-leading-nl
+          (and (numberp pos)
+               (> pos (point-min))
+               (eq (char-before pos) ?\n)
+               (carriage--preloader--newline-hidden-p (1- pos))))
+         (prefix (if need-leading-nl "\n" "")))
     (when (overlayp carriage--preloader-overlay)
       (overlay-put carriage--preloader-overlay 'after-string nil)
       (overlay-put carriage--preloader-overlay 'before-string
-                   (propertize (concat frame "\n") 'face carriage-mode-preloader-face))
+                   (propertize (concat prefix frame "\n")
+                               'face carriage-mode-preloader-face))
       ;; Refresh a visible window showing this buffer; avoid repainting all windows.
       (let ((w (get-buffer-window (current-buffer) t)))
         (when (window-live-p w)
@@ -2047,12 +2071,20 @@ Prefers `carriage--fingerprint-line-marker' when live; otherwise finds the LAST 
       (let ((inhibit-read-only t)
             (case-fold-search t))
         (when (looking-at "^[ \t]*#\\+CARRIAGE_FINGERPRINT\\b.*$")
-          (delete-region (line-beginning-position)
-                         (min (point-max) (1+ (line-end-position)))))
-        (let ((beg (point)))
-          (insert (format "#+CARRIAGE_FINGERPRINT: %s\n" (prin1-to-string (or plist '()))))
-          (set-marker marker beg (current-buffer))
-          t)))))
+          ;; Replace only the line content, preserving the trailing newline.
+          ;; Deleting the newline causes overlays anchored below (e.g. preloader)
+          ;; to be pulled upward into the deletion region ("spinner jumps above fingerprint").
+          (let* ((bol (line-beginning-position))
+                 (eol (line-end-position))
+                 (has-nl (and (< eol (point-max))
+                              (eq (char-after eol) ?\n))))
+            (delete-region bol eol)
+            (goto-char bol)
+            (insert (format "#+CARRIAGE_FINGERPRINT: %s" (prin1-to-string (or plist '()))))
+            (unless has-nl (insert "\n"))))
+        ;; Keep marker at the beginning of the (updated) fingerprint line.
+        (set-marker marker (line-beginning-position) (current-buffer))
+        t))))
 
 (defun carriage-fingerprint-note-usage-and-cost (usage &optional backend provider model)
   "Upsert current request fingerprint line with USAGE and computed cost.
