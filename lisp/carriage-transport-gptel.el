@@ -791,50 +791,59 @@ Also merges bytes-in/out captured by our `gptel-request' wrapper when available.
                   :CAR_STATUS status
                   :CAR_BACKEND 'gptel
                   :CAR_PROVIDER nil))
-             (pl (if carriage-transport-gptel-result-include-model
-                     (plist-put pl :CAR_MODEL (or model-str ""))
+             ;; Carry context budget indicator into the result line (best-effort).
+             ;; Source of truth is the buffer-local vars set during send preparation.
+             (pl (if (boundp 'carriage--last-context-limited)
+                     (plist-put pl :CAR_CTX_LIMITED (and carriage--last-context-limited t))
                    pl))
-             ;; Always include usage keys (even when nil).
-             ;;
-             ;; Display/UX policy:
-             ;; - When token usage is unavailable, also fill in/out with bytes so
-             ;;   result summaries don't stay empty ("in:- out:-").
-             ;; - Preserve raw bytes in dedicated keys regardless.
-             (pl
-              (let* ((tin (plist-get usage :tokens-in))
-                     (tout (plist-get usage :tokens-out))
-                     (bin (plist-get usage :bytes-in))
-                     (bout (plist-get usage :bytes-out))
-                     (unit (cond
-                            ((or (integerp tin) (integerp tout)) 'tokens)
-                            ((or (integerp bin) (integerp bout)) 'bytes)
-                            (t nil)))
-                     (tin2 (if (integerp tin) tin (and (integerp bin) bin)))
-                     (tout2 (if (integerp tout) tout (and (integerp bout) bout))))
-                (setq pl (plist-put pl :CAR_TOKENS_IN tin2))
-                (setq pl (plist-put pl :CAR_TOKENS_OUT tout2))
-                (setq pl (plist-put pl :CAR_BYTES_IN bin))
-                (setq pl (plist-put pl :CAR_BYTES_OUT bout))
-                (when unit
-                  (setq pl (plist-put pl :CAR_USAGE_UNIT unit)))
-                pl))
-             (pl (if (and cost (plist-get cost :cost-in-u))
-                     (plist-put pl :CAR_COST_IN_U (plist-get cost :cost-in-u))
-                   pl))
-             (pl (if (and cost (plist-get cost :cost-out-u))
-                     (plist-put pl :CAR_COST_OUT_U (plist-get cost :cost-out-u))
-                   pl))
-             (pl (if (and cost (plist-get cost :cost-audio-in-u))
-                     (plist-put pl :CAR_COST_AUDIO_IN_U (plist-get cost :cost-audio-in-u))
-                   pl))
-             (pl (if (and cost (plist-get cost :cost-audio-out-u))
-                     (plist-put pl :CAR_COST_AUDIO_OUT_U (plist-get cost :cost-audio-out-u))
-                   pl))
-             (pl (plist-put pl :CAR_COST_TOTAL_U (and cost (plist-get cost :cost-total-u))))
-             (pl (let ((tt (and cost (plist-get cost :cost-total-u))))
-                   (plist-put pl :CAR_COST_KNOWN (and (integerp tt) t))))
-             (pl (plist-put pl :CAR_TS (float-time))))
-        (insert (format "#+CARRIAGE_RESULT: %S\n" pl))))))
+             (pl (if (boundp 'carriage--last-context-omitted)
+                     (plist-put pl :CAR_CTX_OMITTED (and (integerp carriage--last-context-omitted)
+                                                         (max 0 carriage--last-context-omitted)))
+                   pl)))
+        (pl (if carriage-transport-gptel-result-include-model
+                (plist-put pl :CAR_MODEL (or model-str ""))
+              pl))
+        ;; Always include usage keys (even when nil).
+        ;;
+        ;; Display/UX policy:
+        ;; - When token usage is unavailable, also fill in/out with bytes so
+        ;;   result summaries don't stay empty ("in:- out:-").
+        ;; - Preserve raw bytes in dedicated keys regardless.
+        (pl
+         (let* ((tin (plist-get usage :tokens-in))
+                (tout (plist-get usage :tokens-out))
+                (bin (plist-get usage :bytes-in))
+                (bout (plist-get usage :bytes-out))
+                (unit (cond
+                       ((or (integerp tin) (integerp tout)) 'tokens)
+                       ((or (integerp bin) (integerp bout)) 'bytes)
+                       (t nil)))
+                (tin2 (if (integerp tin) tin (and (integerp bin) bin)))
+                (tout2 (if (integerp tout) tout (and (integerp bout) bout))))
+           (setq pl (plist-put pl :CAR_TOKENS_IN tin2))
+           (setq pl (plist-put pl :CAR_TOKENS_OUT tout2))
+           (setq pl (plist-put pl :CAR_BYTES_IN bin))
+           (setq pl (plist-put pl :CAR_BYTES_OUT bout))
+           (when unit
+             (setq pl (plist-put pl :CAR_USAGE_UNIT unit)))
+           pl))
+        (pl (if (and cost (plist-get cost :cost-in-u))
+                (plist-put pl :CAR_COST_IN_U (plist-get cost :cost-in-u))
+              pl))
+        (pl (if (and cost (plist-get cost :cost-out-u))
+                (plist-put pl :CAR_COST_OUT_U (plist-get cost :cost-out-u))
+              pl))
+        (pl (if (and cost (plist-get cost :cost-audio-in-u))
+                (plist-put pl :CAR_COST_AUDIO_IN_U (plist-get cost :cost-audio-in-u))
+              pl))
+        (pl (if (and cost (plist-get cost :cost-audio-out-u))
+                (plist-put pl :CAR_COST_AUDIO_OUT_U (plist-get cost :cost-audio-out-u))
+              pl))
+        (pl (plist-put pl :CAR_COST_TOTAL_U (and cost (plist-get cost :cost-total-u))))
+        (pl (let ((tt (and cost (plist-get cost :cost-total-u))))
+              (plist-put pl :CAR_COST_KNOWN (and (integerp tt) t))))
+        (pl (plist-put pl :CAR_TS (float-time))))
+      (insert (format "#+CARRIAGE_RESULT: %S\n" pl)))))
 
 (defun carriage-transport-gptel--finalize--post-ui-refresh (origin-buffer)
   "Best-effort refresh UI elements affected by a finalize."

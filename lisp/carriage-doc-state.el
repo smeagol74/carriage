@@ -552,6 +552,7 @@ Budgets are intentionally NOT included in the summary subset (they go to tooltip
          (ctx-plain (carriage-doc-state--bool (plist-get pl :CAR_CTX_PLAIN)))
          (ctx-patched (carriage-doc-state--bool (plist-get pl :CAR_CTX_PATCHED)))
          (ctx-map (carriage-doc-state--bool (plist-get pl :CAR_CTX_MAP)))
+         (ctx-limited (carriage-doc-state--bool (plist-get pl :CAR_CTX_LIMITED)))
          (scope (carriage-doc-state--as-symbol (plist-get pl :CAR_DOC_CTX_SCOPE)))
          (profile (carriage-doc-state--as-symbol (plist-get pl :CAR_CTX_PROFILE))))
     (list :CAR_INTENT intent
@@ -565,6 +566,7 @@ Budgets are intentionally NOT included in the summary subset (they go to tooltip
           :CAR_CTX_PLAIN ctx-plain
           :CAR_CTX_PATCHED ctx-patched
           :CAR_CTX_MAP ctx-map
+          :CAR_CTX_LIMITED ctx-limited
           :CAR_DOC_CTX_SCOPE scope
           :CAR_CTX_PROFILE profile)))
 
@@ -700,6 +702,9 @@ Important: use `concat' (not `format') to preserve icon text properties."
          (ctx-b (string-join
                  (delq nil
                        (list
+                        ;; Context was limited/truncated by budgets (bytes/files).
+                        ;; Icon key is best-effort: when unknown, fallback label is used.
+                        (carriage-doc-state--ctx-flag-badge "⚠" ctx-limited 'ctx-limit)
                         (carriage-doc-state--ctx-flag-badge "Plain" ctx-plain 'plain)
                         (carriage-doc-state--ctx-flag-badge "Doc" ctx-doc 'files)
                         (carriage-doc-state--ctx-flag-badge "Gpt" ctx-gptel 'ctx)
@@ -765,6 +770,7 @@ Also shows total request cost when present (as the last badge):
          (ctx-plain (plist-get imp :CAR_CTX_PLAIN))
          (ctx-patched (plist-get imp :CAR_CTX_PATCHED))
          (ctx-map (plist-get imp :CAR_CTX_MAP))
+         (ctx-limited (plist-get imp :CAR_CTX_LIMITED))
          (scope (plist-get imp :CAR_DOC_CTX_SCOPE))
          (profile (plist-get imp :CAR_CTX_PROFILE))
          ;; IMPORTANT: cost keys are not part of important-plist; read them from PL directly.

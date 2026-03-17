@@ -1486,6 +1486,9 @@ Does not modify buffer text; only clears markers/state so the next chunk opens a
   ;; O(1) modeline support: reset last-iteration detection state.
   (setq carriage--last-iteration-has-patches nil)
   (setq carriage--stream-detect-tail "")
+  ;; Context budget indicator for UI (set during send preparation).
+  (setq-local carriage--last-context-limited nil)
+  (setq-local carriage--last-context-omitted 0)
   (carriage--undo-group-start)
   t)
 
@@ -2497,6 +2500,71 @@ Best-effort: never signal."
           ctx-text))
     (error nil)))
 
+(defun carriage--context-meta-from-text (ctx-text)
+  "Extract meta info from formatted CTX-TEXT (see `carriage-context-format').
+Return plist: (:omitted N :limited BOOL). Best-effort; never signals."
+  (condition-case _e
+      (let* ((s (or ctx-text ""))
+             ;; Header example:
+             ;;   ;; Context (system): files=23 included=22 omitted=1 total-bytes=...
+             (omitted
+              (or (when (string-match "^[; \t]*;;[ \t]*Context ([^)]*):\\s-+files=[0-9]+\\s-+included=[0-9]+\\s-+omitted=\\([0-9]+\\)\\b" s)
+                    (string-to-number (match-string 1 s)))
+                  (when (string-match "\\bomitted=\\([0-9]+\\)\\b" s)
+                    (string-to-number (match-string 1 s)))
+                  0))
+             ;; Limit indicators currently appear as warnings like:
+             ;;   ;; limit reached, include path only: ...
+             ;; Or plan truncation warnings:
+             ;;   CTXPLAN_W_LIMIT: truncated by max-files=...
+             (limited
+              (or (string-match-p "limit reached, include path only:" s)
+                  (string-match-p "CTXPLAN_W_LIMIT" s)
+                  (string-match-p "truncated by max-files" s)
+                  (string-match-p "CTX_TIMEOUT" s))))
+        (list :omitted (max 0 (or omitted 0))
+              :limited (and limited t)))
+    (error (list :omitted 0 :limited nil))))
+
+(defun carriage-fingerprint-note-context-meta (meta)
+  "Upsert current request fingerprint line with META about context truncation.
+
+META is a plist like:
+  (:omitted N :limited BOOL)
+
+Also updates buffer-local UI vars:
+- `carriage--last-context-limited'
+- `carriage--last-context-omitted'
+
+Best-effort; never signals."
+  (condition-case _e
+      (let* ((m (and (listp meta) meta))
+             (limited (and m (plist-get m :limited)))
+             (omitted (and m (plist-get m :omitted)))
+             (omitted (if (integerp omitted) (max 0 omitted) 0)))
+        ;; Always update buffer-local vars (modeline/UI reads these).
+        (setq-local carriage--last-context-limited (and limited t))
+        (setq-local carriage--last-context-omitted omitted)
+
+        ;; Update fingerprint line when present.
+        (let* ((marker (carriage-fingerprint--find-line-marker))
+               (old (or (carriage-fingerprint--read-plist-at marker) '()))
+               (pl old))
+          (when (markerp marker)
+            (setq pl (plist-put pl :CAR_CTX_LIMITED (and limited t)))
+            (setq pl (plist-put pl :CAR_CTX_OMITTED omitted))
+            (carriage-fingerprint--write-plist-at marker pl)
+            (when (and (require 'carriage-doc-state nil t)
+                       (fboundp 'carriage-doc-state-summary-refresh))
+              (ignore-errors (carriage-doc-state-summary-refresh (current-buffer))))))
+
+        ;; Best-effort UI refresh.
+        (when (fboundp 'carriage-ui--invalidate-ml-cache)
+          (ignore-errors (carriage-ui--invalidate-ml-cache)))
+        (force-mode-line-update t)
+        t)
+    (error nil)))
+
 (defun carriage--org-structure--nearest-heading-level (&optional pos)
   "Return level (number of stars) of the nearest Org heading above POS (or point), or nil.
 
@@ -2567,6 +2635,7 @@ May include :context-text and :context-target per v1.1."
            (payload (carriage--sanitize-payload-for-llm payload-raw))
            (target (carriage--context-target))
            (ctx-text (carriage--context-collect-and-format buffer target))
+           (ctx-meta (carriage--context-meta-from-text ctx-text))
            (org-note (ignore-errors (carriage--org-structure--prompt-note buffer)))
            (project-state-note
             (concat
@@ -2581,6 +2650,8 @@ May include :context-text and :context-target per v1.1."
               project-state-note))
       (when (and (stringp ctx-text) (not (string-empty-p ctx-text)))
         (setq res (append res (list :context-text ctx-text :context-target target))))
+      (when (listp ctx-meta)
+        (setq res (append res (list :context-meta ctx-meta))))
       ;; Pass typed-blocks guidance toggle into prompt fragments
       (when (boundp 'carriage-mode-typedblocks-structure-hint)
         (setq res (append res
@@ -2770,6 +2841,7 @@ synchronously (still outside the immediate interactive command tick)."
                                           (_ (carriage-log "send: prep job=%s step=build-context start source=%s"
                                                            job-id source))
                                           (ctx (carriage--build-context source srcbuf))
+                                          (meta (plist-get ctx :context-meta))
                                           (t1 (float-time))
                                           (_ (carriage-log "send: prep job=%s step=build-context done elapsed=%.3fs"
                                                            job-id (max 0.0 (- t1 t0))))
@@ -2781,7 +2853,7 @@ synchronously (still outside the immediate interactive command tick)."
                                           (t2 (float-time))
                                           (_ (carriage-log "send: prep job=%s step=build-prompt done elapsed=%.3fs total=%.3fs"
                                                            job-id (max 0.0 (- t2 t1)) (max 0.0 (- t2 t0)))))
-                                     (list :ok t :system sys :prompt pr :elapsed (- (float-time) t0)))
+                                     (list :ok t :system sys :prompt pr :ctx-meta meta :elapsed (- (float-time) t0)))
                                  (quit (list :ok nil :quit t))
                                  (error (list :ok nil :error (error-message-string e))))))
                          (run-at-time
@@ -2808,6 +2880,10 @@ synchronously (still outside the immediate interactive command tick)."
                                                           source (or (plist-get res :elapsed) 0.0))
                                     ;; Transport overrides abort handler; drop PREP handler now.
                                     (ignore-errors (carriage-clear-abort-handler))
+                                    ;; Update fingerprint + UI with context-limit indicator before dispatch.
+                                    (ignore-errors
+                                      (carriage-fingerprint-note-context-meta
+                                       (plist-get res :ctx-meta)))
                                     (carriage--send-dispatch-with-prompt
                                      source srcbuf backend model intent suite
                                      (plist-get res :prompt)
@@ -2844,6 +2920,10 @@ synchronously (still outside the immediate interactive command tick)."
                   (carriage--send-prep-watchdog-stop)
                   (setq carriage--send-prep-thread nil)
                   (ignore-errors (carriage-clear-abort-handler))
+                  ;; Update fingerprint + UI with context-limit indicator before dispatch.
+                  (ignore-errors
+                    (carriage-fingerprint-note-context-meta
+                     (plist-get ctx :context-meta)))
                   (carriage--send-dispatch-with-prompt
                    source srcbuf backend model intent suite pr sys insert-marker)
                   t)
@@ -4583,6 +4663,13 @@ Expected keys include :known (boolean) and :cost-total-u (integer or nil).")
 
 (defvar-local carriage--last-error-detail nil
   "Last request error detail string for UI (e.g., \"402\", \"timeout\", \"network\"), if available.")
+
+(defvar-local carriage--last-context-limited nil
+  "Non-nil when the last built request context exceeded limits and was truncated.
+This flag is set during Send preparation (before dispatch) and is best-effort.")
+
+(defvar-local carriage--last-context-omitted 0
+  "Number of context items omitted due to context budgets for the last built request (best-effort).")
 
 ;; -----------------------------------------------------------------------------
 ;; Org structure compliance (\"Соблюдать структуру\") — prompt/UI toggle
