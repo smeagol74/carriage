@@ -1366,6 +1366,11 @@ Results are cached per-buffer and invalidated when theme or UI parameters change
                                                    :height carriage-mode-icon-height
                                                    :v-adjust (- carriage-mode-icon-v-adjust 0.14)
                                                    :face (list :inherit nil :foreground (carriage-ui--accent-hex 'carriage-ui-accent-purple-face)))))
+                 ('ctx-limit (when (fboundp 'all-the-icons-material)
+                               (all-the-icons-material "warning"
+                                                       :height carriage-mode-icon-height
+                                                       :v-adjust (- carriage-mode-icon-v-adjust 0.12)
+                                                       :face (list :inherit nil :foreground (carriage-ui--accent-hex 'carriage-ui-accent-yellow-face)))))
                  ('ctx (when (fboundp 'all-the-icons-material)
                          (all-the-icons-material "toc"
                                                  :height carriage-mode-icon-height
@@ -2254,6 +2259,12 @@ Uses pulse.el when available, otherwise temporary overlays."
          (err-detail (and (memq 'state blocks)
                           (boundp 'carriage--last-error-detail)
                           carriage--last-error-detail))
+         (ctx-limited (and (memq 'state blocks)
+                           (boundp 'carriage--last-context-limited)
+                           carriage--last-context-limited))
+         (ctx-omitted (and (memq 'state blocks)
+                           (boundp 'carriage--last-context-omitted)
+                           carriage--last-context-omitted))
          ;; Last request cost/usage snapshot for req-cost block.
          (req-cost-key
           (and (memq 'req-cost blocks)
@@ -2290,7 +2301,7 @@ Uses pulse.el when available, otherwise temporary overlays."
          (branch-t (and (memq 'branch blocks) carriage-ui--branch-cache-time))
          (abortp (and (boundp 'carriage--abort-handler) carriage--abort-handler)))
     (list uicons
-          state spin state-tt-ver http-code http-text be-err err-class err-detail
+          state spin state-tt-ver http-code http-text be-err err-class err-detail ctx-limited ctx-omitted
           ctx-ver apply-ver doc-cost-ver req-cost-key
           patch-count has-last abortp blocks
           (and (boundp 'carriage-mode-intent)  carriage-mode-intent)
@@ -2441,6 +2452,12 @@ This segment represents *request/transport* state."
          (http-text (and (boundp 'carriage--last-http-status-text) carriage--last-http-status-text))
          (be-err (and (boundp 'carriage--last-backend-error) carriage--last-backend-error))
          (mid (and (boundp 'carriage--last-model-id) carriage--last-model-id))
+         (ctx-limited (and (boundp 'carriage--last-context-limited) carriage--last-context-limited))
+         (ctx-omitted (and (boundp 'carriage--last-context-omitted) carriage--last-context-omitted))
+         (ctx-ic (when ctx-limited
+                   (or (and (carriage-ui--icons-available-p)
+                            (carriage-ui--icon 'ctx-limit))
+                       "⚠")))
          (err-detail
           (cond
            ((and (stringp http-code) (not (string-empty-p http-code))) http-code)
@@ -2464,12 +2481,13 @@ This segment represents *request/transport* state."
             (format "Error: %s" err-detail))
            (t
             (carriage-ui--state-label st))))
-         (txt (format "%s%s"
-                      label
-                      (if (and carriage-ui-enable-spinner
-                               (memq st '(sending streaming dispatch waiting reasoning)))
-                          (concat " " (carriage-ui--spinner-char))
-                        "")))
+         (txt (concat
+               label
+               (if (and carriage-ui-enable-spinner
+                        (memq st '(sending streaming dispatch waiting reasoning)))
+                   (concat " " (carriage-ui--spinner-char))
+                 "")
+               (if (stringp ctx-ic) (concat " " ctx-ic) "")))
          (face (pcase st
                  ('idle 'carriage-ui-state-idle-face)
                  ((or 'sending 'streaming 'dispatch 'waiting 'reasoning) 'carriage-ui-state-sending-face)
@@ -2478,10 +2496,13 @@ This segment represents *request/transport* state."
                  (_ nil)))
          (help0 (and (boundp 'carriage--ui-state-tooltip) carriage--ui-state-tooltip))
          (help-http
-          (when (or http-code http-text be-err mid err-detail)
+          (when (or http-code http-text be-err mid err-detail ctx-limited)
             (string-join
              (delq nil
                    (list
+                    (and ctx-limited
+                         (format "Context: limited (omitted=%s)"
+                                 (if (integerp ctx-omitted) ctx-omitted (or ctx-omitted "-"))))
                     (and (stringp err-detail) (not (string-empty-p err-detail))
                          (format "Error class: %s" err-detail))
                     (and http-code

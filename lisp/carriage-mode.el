@@ -1155,6 +1155,26 @@ Choose a visible face for your theme; 'shadow can be too dim."
           (force-window-update w))))
     (setq carriage--preloader-index (1+ i))))
 
+(defun carriage--preloader--normalize-pos (pos)
+  "Return POS adjusted so the preloader spinner appears below Carriage marker lines.
+
+If POS is on a line that starts with:
+- #+CARRIAGE_FINGERPRINT / #+CARRIAGE_ID / #+CARRIAGE_RESULT
+- a visual separator line \"-----\"
+then return the beginning of the next line."
+  (condition-case _e
+      (save-excursion
+        (when (numberp pos)
+          (goto-char (max (point-min) (min pos (point-max))))
+          (beginning-of-line)
+          (let ((case-fold-search t))
+            (when (or (looking-at "^[ \t]*#\\+CARRIAGE_\\(FINGERPRINT\\|ID\\|RESULT\\)\\b")
+                      (looking-at "^[ \t]*-----[ \t]*$"))
+              (forward-line 1)
+              (setq pos (point)))))
+        pos)
+    (error pos)))
+
 (defun carriage--preloader-start ()
   "Start buffer preloader at the origin of the current stream region."
   (when carriage-mode-preloader-enabled
@@ -1170,6 +1190,7 @@ Choose a visible face for your theme; 'shadow can be too dim."
                        (buffer-live-p (marker-buffer carriage--stream-origin-marker)))
                   (marker-position carriage--stream-origin-marker))
                  (t (point))))
+           (pos (carriage--preloader--normalize-pos pos))
            (interval (or carriage-mode-preloader-interval 0.2))
            (buf (current-buffer))
            (timer nil))
@@ -1456,6 +1477,10 @@ Returns non-nil when inserted."
 (defun carriage-stream-reset (&optional origin-marker)
   "Reset streaming state for current buffer and set ORIGIN-MARKER if provided.
 Does not modify buffer text; only clears markers/state so the next chunk opens a region."
+  ;; Stop any stale preloader from a previous request attempt so it cannot “stick”
+  ;; above newly inserted fingerprint/separator lines.
+  (when (fboundp 'carriage--preloader-stop)
+    (ignore-errors (carriage--preloader-stop)))
   (setq carriage--stream-beg-marker nil)
   (setq carriage--stream-end-marker nil)
   ;; Streaming perf: clear pending coalesced events and cancel flush timer.
@@ -1924,16 +1949,33 @@ so preloader/streaming starts strictly below the fingerprint line."
         (goto-char (max (point-min) (min pos (point-max))))
         (beginning-of-line)
         ;; Idempotent: if there is already a fingerprint line at origin, replace it.
-        (let ((case-fold-search t))
-          (when (looking-at "^[ \t]*#\\+CARRIAGE_FINGERPRINT\\b.*$")
-            (delete-region (line-beginning-position)
-                           (min (point-max) (1+ (line-end-position))))
-            (goto-char (line-beginning-position))))
-        (let ((beg (point)))
-          (insert line)
-          ;; Marker for two-phase fingerprint upsert (usage+cost) on completion.
-          (setq carriage--fingerprint-line-marker (copy-marker beg t))
-          (setq newpos (point))))
+        ;;
+        ;; IMPORTANT: do NOT delete the trailing newline when rewriting the fingerprint line.
+        ;; Otherwise overlays located on the next line (e.g. preloader spinner) can be pulled
+        ;; upward into the deleted region and appear “above” the fingerprint.
+        (let* ((case-fold-search t)
+               (bol (line-beginning-position))
+               (eol (line-end-position))
+               (has-fp (looking-at "^[ \t]*#\\+CARRIAGE_FINGERPRINT\\b.*$"))
+               (has-nl (and (< eol (point-max))
+                            (eq (char-after eol) ?\n))))
+          (when has-fp
+            ;; Replace only line content; keep newline in place.
+            (delete-region bol eol)
+            (goto-char bol))
+          (let ((beg bol))
+            (if has-fp
+                (progn
+                  (insert (string-trim-right line "\n"))
+                  (unless has-nl (insert "\n")))
+              (insert line))
+            ;; Marker for two-phase fingerprint upsert (usage+cost) on completion.
+            (setq carriage--fingerprint-line-marker (copy-marker beg t))
+            ;; Stream (and preloader) must start strictly after the fingerprint line.
+            (setq newpos (save-excursion
+                           (goto-char beg)
+                           (forward-line 1)
+                           (point))))))
       (when (numberp newpos)
         ;; Stream (and preloader) must start strictly after the fingerprint.
         (setq carriage--stream-origin-marker (copy-marker newpos t))

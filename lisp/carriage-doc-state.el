@@ -589,15 +589,16 @@ Budgets are intentionally NOT included in the summary subset (they go to tooltip
 (defun carriage-doc-state--ui-icon (key fallback)
   "Return icon string for KEY using carriage-ui when available; otherwise FALLBACK.
 
-Important: when `carriage-mode' isn't loaded yet (e.g. file just opened and
-carriage-mode auto-enable hasn't run), `carriage-mode-use-icons' may be unbound.
-We best-effort load carriage-mode so the icon availability checks work and
-default to enabled."
+Important:
+- Do NOT (require 'carriage-mode) here: it can create require cycles during init
+  and break icon overlays for fingerprints/state lines.
+- Respect `carriage-mode-use-icons' when it is bound; otherwise assume icons are allowed."
   (condition-case _e
-      (progn
-        ;; Ensure `carriage-mode-use-icons' and icon params exist before calling carriage-ui.
-        (require 'carriage-mode nil t)
-        (if (and (require 'carriage-ui nil t)
+      (let ((use-icons (if (boundp 'carriage-mode-use-icons)
+                           (and carriage-mode-use-icons t)
+                         t)))
+        (if (and use-icons
+                 (require 'carriage-ui nil t)
                  (fboundp 'carriage-ui--icons-available-p)
                  (carriage-ui--icons-available-p)
                  (fboundp 'carriage-ui--icon))
@@ -673,6 +674,7 @@ Important: use `concat' (not `format') to preserve icon text properties."
          (ctx-plain (plist-get imp :CAR_CTX_PLAIN))
          (ctx-patched (plist-get imp :CAR_CTX_PATCHED))
          (ctx-map (plist-get imp :CAR_CTX_MAP))
+         (ctx-limited (plist-get imp :CAR_CTX_LIMITED))
          (scope (plist-get imp :CAR_DOC_CTX_SCOPE))
          (profile (plist-get imp :CAR_CTX_PROFILE))
          (inj (plist-get imp :CAR_CTX_INJECTION))
@@ -807,6 +809,7 @@ Also shows total request cost when present (as the last badge):
          (ctx-b (string-join
                  (delq nil
                        (list
+                        (carriage-doc-state--ctx-flag-badge "⚠" ctx-limited 'ctx-limit)
                         (carriage-doc-state--ctx-flag-badge "Plain" ctx-plain 'plain)
                         (carriage-doc-state--ctx-flag-badge "Doc" ctx-doc 'files)
                         (carriage-doc-state--ctx-flag-badge "Gpt" ctx-gptel 'ctx)
