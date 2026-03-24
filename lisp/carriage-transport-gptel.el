@@ -38,7 +38,8 @@
 (declare-function carriage-register-abort-handler "carriage-mode" (fn))
 (declare-function carriage-insert-stream-chunk "carriage-mode" (string &optional type))
 (declare-function carriage-stream-finalize "carriage-mode" (&optional errorp mark-last-iteration))
-(declare-function carriage-fingerprint-note-usage-and-cost "carriage-mode" (usage &optional backend provider model))
+(declare-function carriage-fingerprint-note-usage-and-cost "carriage-mode" (usage &optional backend provider model cost))
+(declare-function carriage-llm-full-id "carriage-mode" (&optional backend provider model))
 
 ;; GPTel entry-points
 (declare-function gptel-request "gptel-request" (&optional prompt &rest args))

@@ -59,7 +59,7 @@
                 (should (null (plist-get entry :content)))
                 (should (eq (plist-get entry :reason) 'secret-path))
                 (should (cl-some (lambda (w) (and (stringp w) (string-match-p "secret-path" w))) warns)))))))
-      (ignore-errors (delete-directory root t)))))
+    (ignore-errors (delete-directory root t))))
 
 (ert-deftest carriage-context/secret-path-allow-includes-content ()
   "Secret-like paths should include contents when policy=allow."
@@ -80,7 +80,7 @@
                 (should entry)
                 (should (stringp (plist-get entry :content)))
                 (should (string-match-p "SECRET=1" (plist-get entry :content))))))))
-      (ignore-errors (delete-directory root t)))))
+    (ignore-errors (delete-directory root t))))
 
 (ert-deftest carriage-context/doc-paths-dirty-only-when-edit-affects-context-block ()
   "Doc-context cache should not be invalidated by arbitrary edits outside begin_context blocks."

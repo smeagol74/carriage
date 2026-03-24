@@ -67,6 +67,7 @@
             (setq-local carriage--ui-state 'sending)
             (setq-local carriage--active-send-generation 7)
             (setq-local carriage--apply-entry-id "carriage-send-buffer-7")
+            (setq-local carriage--apply-entry-log-count 3)
             (setq-local carriage-transport--request-id "rid-test-other"))
           ;; Complete OTHER while current buffer is ORIGIN.
           (with-current-buffer origin
@@ -78,7 +79,8 @@
             (should (eq carriage--ui-state 'error))
             (should (null carriage-transport--request-id))
             (should (null carriage--active-send-generation))
-            (should (null carriage--apply-entry-id)))))
+            (should (null carriage--apply-entry-id))
+            (should (equal carriage--apply-entry-log-count 0)))))
     (when (buffer-live-p origin) (kill-buffer origin))
     (when (buffer-live-p other)  (kill-buffer other))))
 

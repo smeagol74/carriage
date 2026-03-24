@@ -612,6 +612,8 @@ When BUFFER is non-nil, operate in that buffer (default is current buffer)."
             (setq carriage--active-send-generation nil))
           (when (boundp 'carriage--apply-entry-id)
             (setq carriage--apply-entry-id nil))
+          (when (boundp 'carriage--apply-entry-log-count)
+            (setq carriage--apply-entry-log-count 0))
           t)))))
 
 ;;;###autoload

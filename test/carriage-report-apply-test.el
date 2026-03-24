@@ -75,7 +75,7 @@
               (should (stringp branch))
               (should (> (length branch) 0))
               (should-not (string= branch "HEAD"))))))
-      (ignore-errors (delete-directory dir t)))))
+    (ignore-errors (delete-directory dir t))))
 
 (provide 'carriage-report-apply-test)
 ;;; carriage-report-apply-test.el ends here

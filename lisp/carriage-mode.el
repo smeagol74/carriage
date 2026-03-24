@@ -2772,11 +2772,6 @@ This guards against duplicate/reentrant send starts caused by stacked wrappers
 This prevents duplicate `run-at-time 0' scheduling before the first deferred
 send tick actually begins request preparation.")
 
-(defcustom carriage-mode-send-debug-backtrace-lines 10
-  "Maximum number of caller frames to log for send-entry diagnostics."
-  :type 'integer
-  :group 'carriage)
-
 (defvar-local carriage--send-entry-seq 0
   "Monotonic sequence number for public send entries in this buffer.")
 
@@ -2784,10 +2779,26 @@ send tick actually begins request preparation.")
   "Current public send entry id for this buffer, or nil.")
 
 (defvar-local carriage--apply-entry-id nil
-  "Send entry id for which auto-apply is currently allowed, or nil.
+  "Last send entry id that attempted auto-apply, or nil.
 
-Used as a best-effort guard to ensure patch/apply side-effects happen at most once
-for a given user-visible send cycle.")
+Kept for diagnostics/backward compatibility; actual deduplication is done via
+`carriage--apply-claim-keys' on a per-apply-unit basis.")
+
+(defvar-local carriage--apply-entry-log-count 0
+  "Diagnostic counter of auto-apply start attempts for current send entry.")
+
+(defvar-local carriage--apply-response-fingerprint nil
+  "Best-effort fingerprint of the last response body for which auto-apply was started.
+
+This is used as a coarse duplicate signal for exact response replays, but must
+not by itself block distinct apply units inside the same send entry.")
+
+(defvar-local carriage--apply-claim-keys nil
+  "List of deduplication keys already claimed for auto-apply in this buffer.
+
+Each key identifies a concrete apply unit within a send entry, so multiple
+distinct single-item applies in one response are allowed, while exact duplicates
+are still dropped.")
 
 (defvar-local carriage--send-generation 0
   "Monotonic generation of user-visible send attempts in this buffer.
@@ -2854,6 +2865,88 @@ Never signals."
     (or (not (integerp generation))
         (not (integerp carriage--active-send-generation))
         (/= generation carriage--active-send-generation))))
+
+(defun carriage--auto-apply-unit-key (source &optional unit response-fingerprint)
+  "Return a deduplication key for auto-apply SOURCE and UNIT.
+
+SOURCE is a short diagnostic tag like 'single-item, 'region-group or 'last-iteration.
+UNIT is an optional plan item (plist/alist) used to distinguish multiple apply
+operations inside one send entry. RESPONSE-FINGERPRINT, when non-empty, is
+included to prevent duplicate replays of the same response body.
+
+Теперь к ключу добавляется подпись содержимого блока (:block-hash), чтобы разные версии patch не считались одинаковыми."
+  (let* ((entry (and (boundp 'carriage--current-send-entry-id)
+                     carriage--current-send-entry-id))
+         (fp (and (stringp response-fingerprint)
+                  (not (string-empty-p response-fingerprint))
+                  response-fingerprint))
+         (op (and unit
+                  (or (and (listp unit) (plist-get unit :op))
+                      (alist-get :op unit))))
+         (target
+          (and unit
+               (or (and (listp unit)
+                        (or (plist-get unit :path)
+                            (plist-get unit :file)
+                            (let ((from (plist-get unit :from))
+                                  (to (plist-get unit :to)))
+                              (and (or from to)
+                                   (format "%s→%s" (or from "-") (or to "-")))))
+                        )
+                   (alist-get :path unit)
+                   (alist-get :file unit)
+                   (let ((from (alist-get :from unit))
+                         (to (alist-get :to unit)))
+                     (and (or from to)
+                          (format "%s→%s" (or from "-") (or to "-")))))))
+         (source1 (or source 'unknown))
+         (block-hash (and unit
+                          (let ((s (prin1-to-string unit)))
+                            (secure-hash 'sha1 s)))))
+    (list :entry entry
+          :source source1
+          :op op
+          :target target
+          :response fp
+          :block-hash block-hash)))
+
+(defun carriage--auto-apply-unit-key (source &optional unit response-fingerprint)
+  "Return a deduplication key for auto-apply SOURCE and UNIT.
+
+SOURCE is a short diagnostic tag like 'single-item, 'region-group or 'last-iteration.
+UNIT is an optional plan item (plist/alist) used to distinguish multiple apply
+operations inside one send entry. RESPONSE-FINGERPRINT, when non-empty, is
+included to prevent duplicate replays of the same response body."
+  (let* ((entry (and (boundp 'carriage--current-send-entry-id)
+                     carriage--current-send-entry-id))
+         (fp (and (stringp response-fingerprint)
+                  (not (string-empty-p response-fingerprint))
+                  response-fingerprint))
+         (op (and unit
+                  (or (and (listp unit) (plist-get unit :op))
+                      (alist-get :op unit))))
+         (target
+          (and unit
+               (or (and (listp unit)
+                        (or (plist-get unit :path)
+                            (plist-get unit :file)
+                            (let ((from (plist-get unit :from))
+                                  (to (plist-get unit :to)))
+                              (and (or from to)
+                                   (format "%s→%s" (or from "-") (or to "-")))))
+                        )
+                   (alist-get :path unit)
+                   (alist-get :file unit)
+                   (let ((from (alist-get :from unit))
+                         (to (alist-get :to unit)))
+                     (and (or from to)
+                          (format "%s→%s" (or from "-") (or to "-")))))))
+         (source1 (or source 'unknown)))
+    (list :entry entry
+          :source source1
+          :op op
+          :target target
+          :response fp)))
 
 (defvar-local carriage-mode--send-prepare-reentry nil
   "Non-nil while async send preflight re-enters the original send command.
@@ -3265,6 +3358,10 @@ GENERATION identifies the user-visible send attempt this deferred tick belongs t
           (message "Carriage: запрос уже выполняется")))
     (setq carriage--send-generation (1+ (or carriage--send-generation 0)))
     (setq carriage--active-send-generation carriage--send-generation)
+    (setq carriage--apply-entry-id nil)
+    (setq carriage--apply-entry-log-count 0)
+    (setq carriage--apply-response-fingerprint nil)
+    (setq carriage--apply-claim-keys nil)
     (setq carriage--send-dispatch-scheduled t)
     (carriage-ui-set-state 'sending)
     ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
@@ -3402,6 +3499,10 @@ GENERATION identifies the user-visible send attempt this deferred tick belongs t
           (message "Carriage: запрос уже выполняется")))
     (setq carriage--send-generation (1+ (or carriage--send-generation 0)))
     (setq carriage--active-send-generation carriage--send-generation)
+    (setq carriage--apply-entry-id nil)
+    (setq carriage--apply-entry-log-count 0)
+    (setq carriage--apply-response-fingerprint nil)
+    (setq carriage--apply-claim-keys nil)
     (setq carriage--send-dispatch-scheduled t)
     (carriage-ui-set-state 'sending)
     ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
@@ -3534,6 +3635,33 @@ Important UI rule:
        carriage-apply-async
        (not noninteractive)))
 
+(defun carriage--auto-apply-guard-claim (&optional source response-fingerprint unit)
+  "Claim auto-apply for a concrete apply UNIT within the current send entry.
+Return non-nil when auto-apply may proceed, nil when it must be dropped as duplicate.
+
+SOURCE is a short diagnostic tag.
+RESPONSE-FINGERPRINT, when non-nil, participates in the per-unit deduplication key.
+UNIT is an optional plan item; when present, deduplication happens per concrete
+apply target (entry+source+op+target+response), not per whole send entry."
+  (let* ((entry (and (boundp 'carriage--current-send-entry-id)
+                     carriage--current-send-entry-id))
+         (source1 (or source 'unknown))
+         (fp (and (stringp response-fingerprint)
+                  (not (string-empty-p response-fingerprint))
+                  response-fingerprint))
+         (key (carriage--auto-apply-unit-key source1 unit fp)))
+    (setq carriage--apply-entry-log-count (1+ (or carriage--apply-entry-log-count 0)))
+    (if (member key carriage--apply-claim-keys)
+        (progn
+          (carriage-log "auto-apply: DROP duplicate source=%s entry=%s fp=%s key=%S attempt=%d"
+                        source1 (or entry "-") (or fp "-") key carriage--apply-entry-log-count)
+          nil)
+      (progn
+        (push key carriage--apply-claim-keys)
+        (carriage-log "auto-apply: claim source=%s entry=%s fp=%s key=%S attempt=%d"
+                      source1 (or entry "-") (or fp "-") key carriage--apply-entry-log-count)
+        t))))
+
 (defun carriage--apply-report-success-p (report)
   "Return non-nil when REPORT indicates success (fail==0)."
   (let* ((sum (and (listp report) (plist-get report :summary)))
@@ -3568,10 +3696,19 @@ Important UI rule:
          (path (or (alist-get :path plan-item) (alist-get :file plan-item)))
          (eng (carriage-apply-engine))
          (pol (and (eq eng 'git) (boundp 'carriage-git-branch-policy) carriage-git-branch-policy)))
-    (carriage-log "apply-dispatch: op=%s target=%s engine=%s policy=%s" op (or path "-") eng pol)
-    (if (carriage--apply-async-enabled-p)
-        (carriage--apply-single-item-async plan-item root)
-      (carriage--apply-single-item-sync plan-item root))))
+    (carriage-log "apply-dispatch: op=%s target=%s engine=%s policy=%s entry=%s"
+                  op (or path "-") eng pol
+                  (or (and (boundp 'carriage--current-send-entry-id)
+                           carriage--current-send-entry-id)
+                      "-"))
+    (if (carriage--auto-apply-guard-claim 'single-item nil plan-item)
+        (if (carriage--apply-async-enabled-p)
+            (carriage--apply-single-item-async plan-item root)
+          (carriage--apply-single-item-sync plan-item root))
+      (progn
+        (when (fboundp 'carriage-ui-apply-set-state)
+          (carriage-ui-apply-set-state 'aborted "Duplicate auto-apply dropped"))
+        nil))))
 
 ;;;###autoload
 (defun carriage-apply-at-point ()
@@ -3667,17 +3804,22 @@ Important UI rule:
                 (when (fboundp 'carriage-ui-apply-set-state)
                   (carriage-ui-apply-set-state 'running "Apply…"))
                 ;; Force sync for grouped apply
-                (let ((carriage-apply-async nil))
-                  (let ((ap (carriage-apply-plan plan root)))
-                    (when (not noninteractive)
-                      (carriage--report-open-maybe ap))
-                    (when (and (not noninteractive)
-                               (let* ((sum (plist-get ap :summary)))
-                                 (and sum (zerop (or (plist-get sum :fail) 0)))))
-                      (carriage--announce-apply-success ap))
-                    ;; Apply badge is updated from the apply report (carriage-ui-note-apply-report).
-                    ap)))))))
-    (call-interactively #'carriage-apply-at-point)))
+                (if (not (carriage--auto-apply-guard-claim 'region-group))
+                    (progn
+                      (when (fboundp 'carriage-ui-apply-set-state)
+                        (carriage-ui-apply-set-state 'aborted "Duplicate auto-apply dropped"))
+                      nil)
+                  (let ((carriage-apply-async nil))
+                    (let ((ap (carriage-apply-plan plan root)))
+                      (when (not noninteractive)
+                        (carriage--report-open-maybe ap))
+                      (when (and (not noninteractive)
+                                 (let* ((sum (plist-get ap :summary)))
+                                   (and sum (zerop (or (plist-get sum :fail) 0)))))
+                        (carriage--announce-apply-success ap))
+                      ;; Apply badge is updated from the apply report (carriage-ui-note-apply-report).
+                      ap)))))))))
+  (call-interactively #'carriage-apply-at-point))
 
 ;;;###autoload
 (defun carriage-apply-last-iteration ()
@@ -3746,26 +3888,31 @@ Important UI rule:
                     (y-or-n-p "Применить группу блоков? "))
             (when (fboundp 'carriage-ui-apply-set-state)
               (carriage-ui-apply-set-state 'running "Apply…"))
-            (let ((carriage-apply-async nil))
-              (if (and (boundp 'carriage-apply-async) carriage-apply-async (not noninteractive))
-                  (progn
-                    (carriage-log "apply-all: async apply scheduled (%d items)" (length plan))
-                    (carriage-apply-plan-async
-                     plan root
-                     (lambda (rep)
-                       (when (not noninteractive)
-                         (carriage--report-open-maybe rep))
-                       ;; Apply badge is updated from the apply report.
-                       rep)))
-                (let ((ap (carriage-apply-plan plan root)))
-                  (when (not noninteractive)
-                    (carriage--report-open-maybe ap))
-                  (when (and (not noninteractive)
-                             (let* ((sum2 (plist-get ap :summary)))
-                               (and sum2 (zerop (or (plist-get sum2 :fail) 0)))))
-                    (carriage--announce-apply-success ap))
-                  ;; Apply badge is updated from the apply report.
-                  ap)))))))))
+            (if (not (carriage--auto-apply-guard-claim 'last-iteration))
+                (progn
+                  (when (fboundp 'carriage-ui-apply-set-state)
+                    (carriage-ui-apply-set-state 'aborted "Duplicate auto-apply dropped"))
+                  nil)
+              (let ((carriage-apply-async nil))
+                (if (and (boundp 'carriage-apply-async) carriage-apply-async (not noninteractive))
+                    (progn
+                      (carriage-log "apply-all: async apply scheduled (%d items)" (length plan))
+                      (carriage-apply-plan-async
+                       plan root
+                       (lambda (rep)
+                         (when (not noninteractive)
+                           (carriage--report-open-maybe rep))
+                         ;; Apply badge is updated from the apply report.
+                         rep)))
+                  (let ((ap (carriage-apply-plan plan root)))
+                    (when (not noninteractive)
+                      (carriage--report-open-maybe ap))
+                    (when (and (not noninteractive)
+                               (let* ((sum2 (plist-get ap :summary)))
+                                 (and sum2 (zerop (or (plist-get sum2 :fail) 0)))))
+                      (carriage--announce-apply-success ap))
+                    ;; Apply badge is updated from the apply report.
+                    ap))))))))))
 
 
 ;;;###autoload
@@ -4970,9 +5117,6 @@ Canonical policy:
                         orig
                         (if carriage--send-in-flight "t" "nil")
                         (if carriage--send-dispatch-scheduled "t" "nil"))
-          (when-let* ((bt (carriage--send-debug-backtrace)))
-            (carriage-log "send-prepare: arm preflight gate backtrace for %S\n%s"
-                          orig bt))
           (carriage-ui-set-state 'sending)
           (when (fboundp 'carriage-ui-apply-reset)
             (ignore-errors (carriage-ui-apply-reset)))
