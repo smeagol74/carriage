@@ -51,7 +51,6 @@
         (carriage-mode -1)))))
 
 (ert-deftest carriage-transport-complete-accepts-buffer-arg ()
-  "carriage-transport-complete accepts BUFFER arg and completes in that buffer."
   (let ((noninteractive nil)
         (origin (generate-new-buffer " *carriage-origin*"))
         (other  (generate-new-buffer " *carriage-other*")))
@@ -60,24 +59,24 @@
           (with-current-buffer origin
             (org-mode)
             (carriage-mode 1)
-            (carriage-transport-begin)
-            (should (eq (symbol-value 'carriage--ui-state) 'sending)))
+            (setq-local carriage--ui-state 'sending))
           (with-current-buffer other
             (org-mode)
             (carriage-mode 1)
-            (carriage-ui-set-state 'error)
-            ;; Complete ORIGIN from a different current buffer; must not signal,
-            ;; and must not clobber OTHER's state.
-            (carriage-transport-complete nil origin)
-            (should (eq (symbol-value 'carriage--ui-state) 'error)))
+            (setq-local carriage--ui-state 'sending)
+            ;; New anti-duplicate guard treats complete(NO-RID) as diagnostics-only no-op.
+            ;; Seed an active request id so explicit BUFFER completion still exercises
+            ;; the real finalize path for OTHER.
+            (setq-local carriage-transport--request-id "rid-test-other"))
+          ;; Complete OTHER while current buffer is ORIGIN.
           (with-current-buffer origin
-            (should (eq (symbol-value 'carriage--ui-state) 'idle))))
-      (when (buffer-live-p origin)
-        (with-current-buffer origin (ignore-errors (carriage-mode -1)))
-        (kill-buffer origin))
-      (when (buffer-live-p other)
-        (with-current-buffer other (ignore-errors (carriage-mode -1)))
-        (kill-buffer other)))))
+            (carriage-transport-complete t other))
+          (should (eq (with-current-buffer origin carriage--ui-state) 'sending))
+          (with-current-buffer other
+            (should (eq carriage--ui-state 'error))
+            (should (null carriage-transport--request-id)))))
+    (when (buffer-live-p origin) (kill-buffer origin))
+    (when (buffer-live-p other)  (kill-buffer other))))
 
 (provide 'carriage-transport-test)
 ;;; carriage-transport-test.el ends here

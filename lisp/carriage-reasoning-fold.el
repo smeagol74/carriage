@@ -45,29 +45,8 @@
 (defvar-local carriage-reasoning-fold--refresh-timer nil
   "Idle timer used to coalesce rescans after edits.")
 
-(defvar-local carriage-reasoning-fold--saved-ignore-invis nil
-  "Saved value of `line-move-ignore-invisible' to restore on disable.")
-
-(defvar-local carriage-reasoning-fold--hover-active nil
-  "When non-nil, hover-mode is active for a reasoning block.
-Plist keys:
-  :beg   begin position (beginning of #+begin_reasoning line)
-  :end   last known end position (end of #+end_reasoning line, or point-max if open).")
-
-(defvar-local carriage-reasoning-fold--hover-inhibit nil
-  "Internal guard to avoid re-entrancy in hover post-command handler.")
-
-(defun carriage-reasoning-fold--overlay-at (pos)
-  "Return the managed reasoning overlay covering POS, or nil."
-  (let ((hit nil))
-    (dolist (ov carriage-reasoning-fold--overlays)
-      (when (and (overlayp ov)
-                 (numberp (overlay-start ov))
-                 (numberp (overlay-end ov))
-                 (>= pos (overlay-start ov))
-                 (<= pos (overlay-end ov)))
-        (setq hit ov)))
-    hit))
+(defvar-local carriage-reasoning-fold--active-overlay nil
+  "Currently revealed reasoning overlay under point, or nil.")
 
 (defun carriage-reasoning-fold--org-hide-at (beg)
   "Hide the Org block at BEG using org-fold/org-hide (best-effort)."
@@ -99,86 +78,41 @@ Plist keys:
       (require 'org)
       (save-excursion
         (goto-char beg)
-        (cond
-         ((fboundp 'org-fold-show-drawer-or-block)
-          (org-fold-show-drawer-or-block))
-         ;; Fallback: show the body region if org-fold exists
-         ((featurep 'org-fold)
-          (let ((body-beg (progn (forward-line 1) (point)))
-                (body-end (save-excursion
-                            (when (re-search-forward "^[ \t]*#\\+end_reasoning\\b" nil t)
-                              (forward-line -1))
-                            (line-end-position))))
-            (when (< body-beg body-end)
-              (org-fold-region body-beg body-end nil))))
-         ;; Last resort: try to toggle to "shown" state (may still toggle on some versions)
-         ((fboundp 'org-hide-block-toggle)
-          (org-hide-block-toggle nil))
-         (t nil))))))
-
-(defun carriage-reasoning-fold--hover-enter (ov)
-  "Enter hover-mode for reasoning overlay OV: remove placeholder and use org-fold.
-
-Important: does NOT reveal block contents. It only removes the placeholder overlay
-so the user sees a normal Org-folded block header."
-  (when (overlayp ov)
-    (let* ((beg (overlay-start ov))
-           (cell (and (numberp beg) (carriage-reasoning-fold--parse-block-at beg)))
-           (end  (and (listp cell) (plist-get cell :end)))
-           (openp (and (listp cell) (plist-get cell :openp))))
-      ;; For open/unfinished blocks there may be no #+end_reasoning yet; org-fold is unreliable.
-      ;; Keep placeholder overlay until the block is complete.
-      (unless openp
-        ;; Remove placeholder overlay so begin/end lines can be seen.
-        (setq carriage-reasoning-fold--overlays (delq ov carriage-reasoning-fold--overlays))
-        (ignore-errors (delete-overlay ov))
-        ;; Ensure the block remains folded by Org.
-        (carriage-reasoning-fold--org-hide-at beg)
-        (setq carriage-reasoning-fold--hover-active (list :beg beg :end (or end (point-max))))))))
-
-(defun carriage-reasoning-fold--hover-exit ()
-  "Exit hover-mode if active: show org-folded block, restore placeholder overlay (folded)."
-  (when (and (listp carriage-reasoning-fold--hover-active)
-             (numberp (plist-get carriage-reasoning-fold--hover-active :beg)))
-    (let* ((beg (plist-get carriage-reasoning-fold--hover-active :beg))
-           (cell (and (numberp beg) (carriage-reasoning-fold--parse-block-at beg)))
-           (end  (and (listp cell) (plist-get cell :end)))
-           (openp (and (listp cell) (plist-get cell :openp))))
-      ;; Ensure org-fold is not left behind (otherwise placeholder-toggle would never reveal body).
-      (carriage-reasoning-fold--org-show-at beg)
-      ;; Restore placeholder overlay (folded by default).
-      (when (and (numberp beg) (numberp end) (< beg end))
-        (carriage-reasoning-fold--make beg end openp)))
-    (setq carriage-reasoning-fold--hover-active nil)))
-
-(defun carriage-reasoning-fold--post-command ()
-  "Hover behavior: when point enters a placeholder overlay, replace it with org-folded block;
-when point leaves that block, restore placeholder overlay immediately."
-  (when (and carriage-reasoning-fold--enabled
-             (derived-mode-p 'org-mode)
-             (not carriage-reasoning-fold--hover-inhibit))
-    (let ((carriage-reasoning-fold--hover-inhibit t)
-          (pos (point)))
-      (condition-case _e
-          (let* ((active carriage-reasoning-fold--hover-active)
-                 (abeg (and (listp active) (plist-get active :beg)))
-                 (aend (and (listp active) (plist-get active :end))))
-            (cond
-             ;; If we have an active hover block and point left it, exit hover-mode.
-             ((and (numberp abeg) (numberp aend)
-                   (or (< pos abeg) (> pos aend)))
-              (carriage-reasoning-fold--hover-exit)
-              ;; After exit, we may have entered another overlay at POS in the same command.
-              (let ((ov2 (carriage-reasoning-fold--overlay-at pos)))
-                (when (overlayp ov2)
-                  (carriage-reasoning-fold--hover-enter ov2))))
-             ;; No active hover block: entering an overlay activates hover-mode.
-             ((null active)
-              (let ((ov (carriage-reasoning-fold--overlay-at pos)))
+        (let ((end nil))
+          (cond
+           ((fboundp 'org-fold-show-drawer-or-block)
+            (org-fold-show-drawer-or-block))
+           ;; Fallback: show the body region if org-fold exists
+           ((featurep 'org-fold)
+            (let ((body-beg (progn (forward-line 1) (point)))
+                  (body-end (save-excursion
+                              (when (re-search-forward "^[ \t]*#\\+end_reasoning\\b" nil t)
+                                (forward-line -1))
+                              (line-end-position))))
+              (when (< body-beg body-end)
+                (org-fold-region body-beg body-end nil))))
+           ;; Last resort: try to toggle to "shown" state (may still toggle on some versions)
+           ((fboundp 'org-hide-block-toggle)
+            (org-hide-block-toggle nil))
+           (t nil))
+          ;; Org may leave its own ellipsis/placeholder overlays behind after reveal.
+          ;; Purge them in the block range so hover reveal shows the full block body.
+          (save-excursion
+            (goto-char beg)
+            (when (re-search-forward "^[ \t]*#\\+end_reasoning\\b" nil t)
+              (setq end (line-end-position))
+              (dolist (ov (overlays-in beg end))
                 (when (overlayp ov)
-                  (carriage-reasoning-fold--hover-enter ov)))))
-            nil)
-        (error nil)))))
+                  (let ((inv (overlay-get ov 'invisible))
+                        (cat (overlay-get ov 'category)))
+                    (when (or (eq inv 'org-fold)
+                              (eq inv 'org-hide-block)
+                              (eq cat 'org-fold)
+                              (eq cat 'org-hide-block))
+                      (overlay-put ov 'before-string nil)
+                      (overlay-put ov 'after-string nil)
+                      (overlay-put ov 'display nil)
+                      (overlay-put ov 'invisible nil))))))))))))
 
 (defun carriage-reasoning-fold--parse-block-at (beg)
   "At BEG (beginning of line), return plist (:beg :end :openp) for reasoning block, or nil.
@@ -269,6 +203,7 @@ to guarantee a single placeholder per reasoning block."
     (dolist (ov carriage-reasoning-fold--overlays)
       (when (overlayp ov) (delete-overlay ov))))
   (setq carriage-reasoning-fold--overlays nil)
+  (setq carriage-reasoning-fold--active-overlay nil)
   ;; Defensive cleanup: if overlays list was stale/cleared incorrectly, remove all
   ;; reasoning-fold overlays still present in the buffer.
   (ignore-errors
@@ -282,44 +217,47 @@ to guarantee a single placeholder per reasoning block."
                        (eq (overlay-get ov 'category) 'carriage-reasoning-fold)))
           (delete-overlay ov))))))
 
+(defun carriage-reasoning-fold--point-inside-ov-p (ov)
+  "Return non-nil when point is inside OV.
+Treat overlay end as inside too, to keep reveal stable at EOL."
+  (when (overlayp ov)
+    (let ((beg (overlay-start ov))
+          (end (overlay-end ov))
+          (pt (point)))
+      (and (number-or-marker-p beg)
+           (number-or-marker-p end)
+           (<= beg pt)
+           (<= pt end)))))
+
 (defun carriage-reasoning-fold--refresh-now ()
   "Rescan buffer and (re)create overlays for reasoning blocks.
 
-Avoid duplicate placeholders:
-- When hover-mode is active for a completed reasoning block, do NOT recreate the
-  placeholder overlay for that same block (otherwise we can get placeholder overlay
-  + org-fold ellipsis at the same time).
-- Before creating a placeholder overlay for completed blocks, best-effort remove any
-  org-fold at their begin line.
-
-Important (streaming UX):
-- During streaming the buffer is constantly modified, so refresh runs often.
-- If point is currently inside a reasoning block, keep it REVEALED; otherwise the
-  overlay will be re-folded by refresh while point does not move (no post-command
-  to re-reveal), making it impossible to inspect the streamed reasoning."
-  (let ((pos (point)))
+Hover reveal is preserved across refreshes for the currently active overlay only,
+which keeps cursor-driven behavior stable while avoiding full overlay churn per command."
+  (let ((pt (point))
+        (reveal-range nil))
+    (when (overlayp carriage-reasoning-fold--active-overlay)
+      (setq reveal-range
+            (cons (overlay-start carriage-reasoning-fold--active-overlay)
+                  (overlay-end carriage-reasoning-fold--active-overlay))))
     (carriage-reasoning-fold--clear-overlays)
     (when (and carriage-reasoning-fold--enabled
                (derived-mode-p 'org-mode))
-      (let* ((hover-beg (and (listp carriage-reasoning-fold--hover-active)
-                             (plist-get carriage-reasoning-fold--hover-active :beg))))
-        (dolist (cell (carriage-reasoning-fold--scan))
-          (let ((beg (plist-get cell :beg))
-                (end (plist-get cell :end))
-                (openp (plist-get cell :openp)))
-            (when (and (numberp beg) (numberp end) (< beg end))
-              (unless (and (numberp hover-beg) (= beg hover-beg))
-                ;; Clean up org-fold artifacts only for completed blocks.
-                (unless openp
-                  (carriage-reasoning-fold--org-show-at beg))
-                (let ((ov (carriage-reasoning-fold--make beg end openp)))
-                  ;; Keep revealed while point is inside this block (esp. streaming open blocks).
-                  (when (and (overlayp ov)
-                             (numberp pos)
-                             (<= beg pos) (<= pos end))
-                    (overlay-put ov 'before-string nil)
-                    (overlay-put ov 'invisible nil)
-                    (overlay-put ov 'carriage-reasoning-revealed t)))))))))))
+      (dolist (cell (carriage-reasoning-fold--scan))
+        (let ((beg (plist-get cell :beg))
+              (end (plist-get cell :end))
+              (openp (plist-get cell :openp)))
+          (when (and (numberp beg) (numberp end) (< beg end))
+            (let ((ov (carriage-reasoning-fold--make beg end openp)))
+              (when (and (consp reveal-range)
+                         (= beg (car reveal-range))
+                         (= end (cdr reveal-range))
+                         (<= beg pt) (<= pt end))
+                (carriage-reasoning-fold--org-show-at beg)
+                (overlay-put ov 'before-string nil)
+                (overlay-put ov 'invisible nil)
+                (overlay-put ov 'carriage-reasoning-revealed t)
+                (setq carriage-reasoning-fold--active-overlay ov)))))))))
 
 (defun carriage-reasoning-fold-refresh-now (&optional buffer)
   "Public: refresh reasoning overlays now in BUFFER (or current)."
@@ -345,6 +283,50 @@ Important (streaming UX):
   (when carriage-reasoning-fold--enabled
     (carriage-reasoning-fold--schedule-refresh 0.1)))
 
+(defun carriage-reasoning-fold--post-command ()
+  "Reveal reasoning overlay under point; fold it back after point leaves.
+Touches only one active overlay per command to minimize interference with vertical motion."
+  (when (and carriage-reasoning-fold--enabled
+             (derived-mode-p 'org-mode)
+             (get-buffer-window (current-buffer) t))
+    (let ((active carriage-reasoning-fold--active-overlay))
+      ;; Fold previously active overlay when point left it.
+      (when (overlayp active)
+        (if (carriage-reasoning-fold--point-inside-ov-p active)
+            nil
+          (carriage-reasoning-fold--org-hide-at (overlay-start active))
+          (overlay-put active 'before-string
+                       (carriage-reasoning-fold--placeholder
+                        (overlay-start active)
+                        (overlay-end active)
+                        (overlay-get active 'carriage-reasoning-openp)))
+          (overlay-put active 'invisible carriage-reasoning-fold-invisible-symbol)
+          (overlay-put active 'carriage-reasoning-revealed nil)
+          (setq carriage-reasoning-fold--active-overlay nil)))
+
+      ;; Reveal current overlay exactly under point.
+      (unless (overlayp carriage-reasoning-fold--active-overlay)
+        (let ((pt (point))
+              (hit nil))
+          (dolist (ov (overlays-at pt))
+            (when (and (overlayp ov)
+                       (eq (overlay-get ov 'category) 'carriage-reasoning-fold)
+                       (carriage-reasoning-fold--point-inside-ov-p ov))
+              (setq hit ov)))
+          (unless hit
+            (let ((lo (max (point-min) (1- pt)))
+                  (hi (min (point-max) (1+ pt))))
+              (dolist (ov (overlays-in lo hi))
+                (when (and (overlayp ov)
+                           (eq (overlay-get ov 'category) 'carriage-reasoning-fold)
+                           (carriage-reasoning-fold--point-inside-ov-p ov))
+                  (setq hit ov)))))
+          (when (overlayp hit)
+            (carriage-reasoning-fold--org-show-at (overlay-start hit))
+            (overlay-put hit 'before-string nil)
+            (overlay-put hit 'invisible nil)
+            (overlay-put hit 'carriage-reasoning-revealed t)
+            (setq carriage-reasoning-fold--active-overlay hit)))))))
 
 (defun carriage-reasoning-fold-toggle-at (pos)
   "Toggle fold state of a reasoning overlay covering POS."
@@ -358,12 +340,14 @@ Important (streaming UX):
     (when (overlayp hit)
       (if (overlay-get hit 'carriage-reasoning-revealed)
           (progn
+            (carriage-reasoning-fold--org-hide-at (overlay-start hit))
             (overlay-put hit 'before-string
                          (carriage-reasoning-fold--placeholder
                           (overlay-start hit) (overlay-end hit)
                           (overlay-get hit 'carriage-reasoning-openp)))
             (overlay-put hit 'invisible carriage-reasoning-fold-invisible-symbol)
             (overlay-put hit 'carriage-reasoning-revealed nil))
+        (carriage-reasoning-fold--org-show-at (overlay-start hit))
         (overlay-put hit 'before-string nil)
         (overlay-put hit 'invisible nil)
         (overlay-put hit 'carriage-reasoning-revealed t)))))
@@ -387,11 +371,15 @@ Important (streaming UX):
   "Enable folding of reasoning blocks in BUFFER (or current)."
   (with-current-buffer (or buffer (current-buffer))
     (setq carriage-reasoning-fold--enabled t)
-    (setq carriage-reasoning-fold--saved-ignore-invis line-move-ignore-invisible)
-    ;; Allow point to move into invisible text so users can enter the folded region.
-    (setq-local line-move-ignore-invisible nil)
-    (add-hook 'post-command-hook #'carriage-reasoning-fold--post-command nil t)
+    (setq carriage-reasoning-fold--active-overlay nil)
     (add-hook 'after-change-functions #'carriage-reasoning-fold--after-change nil t)
+    (add-hook 'post-command-hook #'carriage-reasoning-fold--post-command nil t)
+    (when (derived-mode-p 'org-mode)
+      (dolist (cell (carriage-reasoning-fold--scan))
+        (let ((beg (plist-get cell :beg))
+              (end (plist-get cell :end)))
+          (when (and (numberp beg) (numberp end) (< beg end))
+            (carriage-reasoning-fold--org-hide-at beg)))))
     (carriage-reasoning-fold--refresh-now)
     t))
 
@@ -400,12 +388,12 @@ Important (streaming UX):
   "Disable folding of reasoning blocks in BUFFER (or current)."
   (with-current-buffer (or buffer (current-buffer))
     (setq carriage-reasoning-fold--enabled nil)
+    (setq carriage-reasoning-fold--active-overlay nil)
     (remove-hook 'after-change-functions #'carriage-reasoning-fold--after-change t)
+    (remove-hook 'post-command-hook #'carriage-reasoning-fold--post-command t)
     (when (timerp carriage-reasoning-fold--refresh-timer)
       (cancel-timer carriage-reasoning-fold--refresh-timer))
     (setq carriage-reasoning-fold--refresh-timer nil)
-    (when (local-variable-p 'line-move-ignore-invisible)
-      (setq-local line-move-ignore-invisible carriage-reasoning-fold--saved-ignore-invis))
     (carriage-reasoning-fold--clear-overlays)
     t))
 

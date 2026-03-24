@@ -983,6 +983,221 @@ Returns plist with :watchdog-fired :code :reqn :procs0."
 ;; ---------------------------------------------------------------------
 ;; Callback
 
+(defun carriage-transport-gptel--callback-stale-p (origin-buffer _id finished resp)
+  "Return non-nil when callback should be ignored as stale for ORIGIN-BUFFER.
+Also logs a diagnostic line for RESP when appropriate.
+
+Important:
+GPTel adapter request ids (e.g. \"gptel-1\") are local diagnostic ids and MUST NOT
+be compared to transport request ids (rid-*) from `carriage-transport'.  Transport
+RID presence is used only as a liveness flag here."
+  (let ((stale
+         (or (not (buffer-live-p origin-buffer))
+             (with-current-buffer origin-buffer
+               (or finished
+                   carriage-transport-gptel--finalized
+                   (null carriage-transport--request-id))))))
+    (when (and stale
+               (buffer-live-p origin-buffer)
+               carriage-transport-gptel-diagnostics)
+      (carriage-log "Transport[gptel] LATE/STALE-CB active-rid=%s resp=%s"
+                    (with-current-buffer origin-buffer
+                      (or carriage-transport--request-id "-"))
+                    (carriage-transport-gptel--snip resp 200)))
+    stale))
+
+(defun carriage-transport-gptel--callback-trace-note (resp)
+  "Return optional trace note string for RESP."
+  (cond
+   ((and (stringp resp) (string-empty-p resp)) "empty-string")
+   ((and (consp resp) (eq (car resp) 'reasoning)
+         (stringp (cdr resp)) (string-empty-p (cdr resp)))
+    "empty-reasoning")
+   ((and (consp resp) (eq (car resp) 'reasoning) (eq (cdr resp) t))
+    "reasoning-end")
+   ((eq resp t) "done")
+   ((eq resp 'abort) "abort")
+   ((null resp) "nil")
+   (t nil)))
+
+(defun carriage-transport-gptel--callback-touch-and-trace (origin-buffer id resp info)
+  "Record activity and trace callback event for ORIGIN-BUFFER."
+  (with-current-buffer origin-buffer
+    (carriage-transport-gptel--wd-touch))
+  (when carriage-transport-gptel-trace-chunks
+    (carriage-transport-gptel--trace-callback
+     id resp info
+     (carriage-transport-gptel--callback-trace-note resp))))
+
+(defun carriage-transport-gptel--callback-handle-text (origin-buffer resp first-stream)
+  "Handle text RESP for ORIGIN-BUFFER and return updated FIRST-STREAM."
+  (with-current-buffer origin-buffer
+    (carriage-transport-gptel--chunk-note 'text resp))
+  (unless first-stream
+    (setq first-stream t)
+    (with-current-buffer origin-buffer
+      (carriage-transport-gptel--wd-extend))
+    (carriage-transport-streaming origin-buffer))
+  (with-current-buffer origin-buffer
+    (carriage-insert-stream-chunk resp 'text))
+  first-stream)
+
+(defun carriage-transport-gptel--callback-handle-reasoning (origin-buffer resp first-stream)
+  "Handle reasoning RESP for ORIGIN-BUFFER and return updated FIRST-STREAM."
+  (let ((val (cdr resp)))
+    (cond
+     ((stringp val)
+      (with-current-buffer origin-buffer
+        (carriage-transport-gptel--chunk-note 'reasoning val))
+      (unless first-stream
+        (setq first-stream t)
+        (carriage-transport-streaming origin-buffer))
+      (with-current-buffer origin-buffer
+        (carriage-insert-stream-chunk val 'reasoning))
+      first-stream)
+     ((eq val t)
+      (with-current-buffer origin-buffer
+        (carriage-transport-gptel--chunk-note 'reasoning-end nil))
+      first-stream)
+     (t first-stream))))
+
+(defun carriage-transport-gptel--callback-finalize-simple
+    (origin-buffer id final resp info requested-model)
+  "Finalize simple terminal callback for ORIGIN-BUFFER and ID."
+  (with-current-buffer origin-buffer
+    (carriage-transport-gptel--chunk-note final nil))
+  (carriage-transport-gptel--finalize origin-buffer id final resp info requested-model))
+
+(defun carriage-transport-gptel--callback-handle-nil
+    (origin-buffer id resp info requested-model)
+  "Handle nil terminal RESP for ORIGIN-BUFFER and ID."
+  (with-current-buffer origin-buffer
+    (carriage-transport-gptel--chunk-note 'nil nil))
+  (when carriage-transport-gptel-diagnostics
+    (carriage-log "Transport[gptel] NIL-RESP id=%s http-ok=%s info-error=%s status=%s"
+                  id
+                  (if (carriage-transport-gptel--info-http-ok-p info) "t" "nil")
+                  (if (carriage-transport-gptel--info-has-error-p info) "t" "nil")
+                  (carriage-transport-gptel--snip
+                   (and (listp info) (plist-get info :status))
+                   200)))
+  (carriage-transport-gptel--finalize
+   origin-buffer id
+   (if (and (carriage-transport-gptel--info-http-ok-p info)
+            (not (carriage-transport-gptel--info-has-error-p info)))
+       'done
+     'error)
+   resp info requested-model))
+
+(defun carriage-transport-gptel--callback-handle-unknown (id resp info first-stream)
+  "Log unknown callback RESP/INFO for ID and preserve FIRST-STREAM."
+  (when carriage-transport-gptel-diagnostics
+    (carriage-log "Transport[gptel] UNKNOWN id=%s resp=%s info=%s"
+                  id
+                  (carriage-transport-gptel--snip resp 400)
+                  (carriage-transport-gptel--snip info 400)))
+  (list :finished nil
+        :first-stream first-stream
+        :last-resp resp
+        :last-info info))
+
+(defun carriage-transport-gptel--callback-dispatch
+    (origin-buffer id requested-model resp info first-stream)
+  "Dispatch one callback event and return updated callback state."
+  (cond
+   ((stringp resp)
+    (list :finished nil
+          :first-stream
+          (carriage-transport-gptel--callback-handle-text
+           origin-buffer resp first-stream)
+          :last-resp resp
+          :last-info info))
+   ((and (consp resp) (eq (car resp) 'reasoning))
+    (list :finished nil
+          :first-stream
+          (carriage-transport-gptel--callback-handle-reasoning
+           origin-buffer resp first-stream)
+          :last-resp resp
+          :last-info info))
+   ((eq resp t)
+    (carriage-transport-gptel--callback-finalize-simple
+     origin-buffer id 'done resp info requested-model)
+    (list :finished t
+          :first-stream first-stream
+          :last-resp resp
+          :last-info info))
+   ((eq resp 'abort)
+    (carriage-transport-gptel--callback-finalize-simple
+     origin-buffer id 'abort resp info requested-model)
+    (list :finished t
+          :first-stream first-stream
+          :last-resp resp
+          :last-info info))
+   ((null resp)
+    (carriage-transport-gptel--callback-handle-nil
+     origin-buffer id resp info requested-model)
+    (list :finished t
+          :first-stream first-stream
+          :last-resp resp
+          :last-info info))
+   (t
+    (carriage-transport-gptel--callback-handle-unknown
+     id resp info first-stream))))
+
+(defun carriage-transport-gptel--callback-handle-inner-error
+    (origin-buffer id requested-model last-resp last-info err first-stream)
+  "Handle callback dispatch ERR and return terminal callback state."
+  (carriage-transport-gptel--finalize
+   origin-buffer id 'error last-resp last-info requested-model err)
+  (list :finished t
+        :first-stream first-stream
+        :last-resp last-resp
+        :last-info last-info))
+
+(defun carriage-transport-gptel--callback-handle-outer-error (origin-buffer id outer-err)
+  "Handle uncaught OUTER-ERR for ORIGIN-BUFFER and ID."
+  (when (buffer-live-p origin-buffer)
+    (with-current-buffer origin-buffer
+      (setq carriage-transport-gptel--finalized t)))
+  (when carriage-transport-gptel-diagnostics
+    (carriage-log "Transport[gptel] CALLBACK-OUTER-ERROR id=%s err=%s"
+                  id (error-message-string outer-err))))
+
+(defun carriage-transport-gptel--callback-handle-finished
+    (id resp first-stream last-resp last-info)
+  "Handle callback received after terminal state and return unchanged state."
+  (when carriage-transport-gptel-diagnostics
+    (carriage-log "Transport[gptel] LATE id=%s resp=%s"
+                  id (carriage-transport-gptel--snip resp 200)))
+  (list :finished t
+        :first-stream first-stream
+        :last-resp last-resp
+        :last-info last-info))
+
+(defun carriage-transport-gptel--callback-handle-one
+    (origin-buffer id requested-model resp info finished first-stream last-resp last-info)
+  "Handle one GPTel callback event and return updated callback state plist."
+  (if finished
+      (carriage-transport-gptel--callback-handle-finished
+       id resp first-stream last-resp last-info)
+    (condition-case err
+        (progn
+          (carriage-transport-gptel--callback-touch-and-trace origin-buffer id resp info)
+          (carriage-transport-gptel--callback-dispatch
+           origin-buffer id requested-model resp info first-stream))
+      (error
+       (carriage-transport-gptel--callback-handle-inner-error
+        origin-buffer id requested-model last-resp last-info err first-stream)))))
+
+(defun carriage-transport-gptel--callback-apply-state
+    (state finished first-stream last-resp last-info)
+  "Return updated lexical callback state from STATE and current values."
+  (list
+   (if (plist-member state :finished) (plist-get state :finished) finished)
+   (if (plist-member state :first-stream) (plist-get state :first-stream) first-stream)
+   (if (plist-member state :last-resp) (plist-get state :last-resp) last-resp)
+   (if (plist-member state :last-info) (plist-get state :last-info) last-info)))
+
 (defun carriage-transport-gptel--make-callback (origin-buffer id requested-model)
   "Return GPTel callback for ORIGIN-BUFFER."
   (let ((finished nil)
@@ -990,112 +1205,22 @@ Returns plist with :watchdog-fired :code :reqn :procs0."
         (last-info nil)
         (last-resp nil))
     (lambda (resp info)
-      (with-current-buffer origin-buffer
-        (carriage-transport-gptel--wd-touch))
-      (setq last-info info)
-      (setq last-resp resp)
-      (when carriage-transport-gptel-trace-chunks
-        (carriage-transport-gptel--trace-callback
-         id resp info
-         (cond
-          ((and (stringp resp) (string-empty-p resp)) "empty-string")
-          ((and (consp resp) (eq (car resp) 'reasoning) (stringp (cdr resp)) (string-empty-p (cdr resp))) "empty-reasoning")
-          ((and (consp resp) (eq (car resp) 'reasoning) (eq (cdr resp) t)) "reasoning-end")
-          ((eq resp t) "done")
-          ((eq resp 'abort) "abort")
-          ((null resp) "nil")
-          (t nil))))
-      (condition-case err
-          (progn
-            (when finished
-              ;; Late callback after finalize: never signal.
-              (when carriage-transport-gptel-diagnostics
-                (carriage-log "Transport[gptel] LATE id=%s resp=%s"
-                              id (carriage-transport-gptel--snip resp 200)))
-              ;; Return quietly, do not throw/catch.
-              nil)
-
-            (cond
-             ;; Stream text
-             ((stringp resp)
-              (with-current-buffer origin-buffer
-                (carriage-transport-gptel--chunk-note 'text resp))
-              (unless first-stream
-                (setq first-stream t)
-                (with-current-buffer origin-buffer
-                  (carriage-transport-gptel--wd-extend))
-                (carriage-transport-streaming origin-buffer))
-              (with-current-buffer origin-buffer
-                (carriage-insert-stream-chunk resp 'text)))
-
-             ;; Reasoning stream (best-effort, use carriage-mode policy at insertion layer)
-             ((and (consp resp) (eq (car resp) 'reasoning))
-              (let ((val (cdr resp)))
-                (cond
-                 ((stringp val)
-                  (with-current-buffer origin-buffer
-                    (carriage-transport-gptel--chunk-note 'reasoning val))
-                  (unless first-stream
-                    (setq first-stream t)
-                    (carriage-transport-streaming origin-buffer))
-                  (with-current-buffer origin-buffer
-                    (carriage-insert-stream-chunk val 'reasoning)))
-                 ((eq val t)
-                  (with-current-buffer origin-buffer
-                    (carriage-transport-gptel--chunk-note 'reasoning-end nil))
-                  ;; end reasoning marker: insertion layer handles closing
-                  nil)
-                 (t nil))))
-
-             ;; Done
-             ((eq resp t)
-              (with-current-buffer origin-buffer
-                (carriage-transport-gptel--chunk-note 'done nil))
-              (setq finished t)
-              (carriage-transport-gptel--finalize origin-buffer id 'done resp info requested-model))
-
-             ;; Abort (explicit)
-             ((eq resp 'abort)
-              (with-current-buffer origin-buffer
-                (carriage-transport-gptel--chunk-note 'abort nil))
-              (setq finished t)
-              (carriage-transport-gptel--finalize origin-buffer id 'abort resp info requested-model))
-
-             ;; Empty terminal response: if HTTP already succeeded and provider error is absent,
-             ;; treat this as a successful completion with empty textual content.
-             ((null resp)
-              (with-current-buffer origin-buffer
-                (carriage-transport-gptel--chunk-note 'nil nil))
-              (setq finished t)
-              (when carriage-transport-gptel-diagnostics
-                (carriage-log "Transport[gptel] NIL-RESP id=%s http-ok=%s info-error=%s status=%s"
-                              id
-                              (if (carriage-transport-gptel--info-http-ok-p info) "t" "nil")
-                              (if (carriage-transport-gptel--info-has-error-p info) "t" "nil")
-                              (carriage-transport-gptel--snip
-                               (and (listp info) (plist-get info :status))
-                               200)))
-              (carriage-transport-gptel--finalize
-               origin-buffer id
-               (if (and (carriage-transport-gptel--info-http-ok-p info)
-                        (not (carriage-transport-gptel--info-has-error-p info)))
-                   'done
-                 'error)
-               resp info requested-model))
-
-             ;; Unknown event kind: log and ignore (do not crash)
-             (t
-              (when carriage-transport-gptel-diagnostics
-                (carriage-log "Transport[gptel] UNKNOWN id=%s resp=%s info=%s"
-                              id
-                              (carriage-transport-gptel--snip resp 400)
-                              (carriage-transport-gptel--snip info 400)))
-              nil)))
+      (condition-case outer-err
+          (unless (carriage-transport-gptel--callback-stale-p origin-buffer id finished resp)
+            (pcase-let ((`(,finished1 ,first-stream1 ,last-resp1 ,last-info1)
+                         (carriage-transport-gptel--callback-apply-state
+                          (carriage-transport-gptel--callback-handle-one
+                           origin-buffer id requested-model resp info
+                           finished first-stream last-resp last-info)
+                          finished first-stream last-resp last-info)))
+              (setq finished finished1)
+              (setq first-stream first-stream1)
+              (setq last-resp last-resp1)
+              (setq last-info last-info1)))
         (error
-         ;; Internal crash in our callback handler
          (setq finished t)
-         (carriage-transport-gptel--finalize
-          origin-buffer id 'error last-resp last-info requested-model err))))))
+         (carriage-transport-gptel--callback-handle-outer-error
+          origin-buffer id outer-err))))))
 
 ;; ---------------------------------------------------------------------
 ;; Attachments (manual + auto)
@@ -1455,20 +1580,39 @@ Generic non-image files are omitted from `gptel-context'."
     (user-error "GPTel is not available"))
   t)
 
-(defun carriage-transport-gptel--dispatch-make-abort (buffer id)
-  "Return an abort function bound to BUFFER and request ID."
+(defun carriage-transport-gptel--dispatch-make-abort (buffer id requested-model)
+  "Return an abort function bound to BUFFER, request ID and REQUESTED-MODEL."
   (lambda ()
     (carriage-log "Transport[gptel] ABORT requested id=%s" id)
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        ;; Close the callback hot-path immediately so late chunks cannot keep inserting.
+        (setq carriage-transport-gptel--finalized t)
+        (setq carriage-transport-gptel--finalized-kind 'abort)
+        ;; Invalidate transport request lifecycle immediately.
+        ;; IMPORTANT: `id' here is GPTel-local and must not be compared to transport rid.
+        (when (boundp 'carriage-transport--request-id)
+          (setq carriage-transport--request-id nil))
+        (when (fboundp 'carriage-transport--watchdog-stop)
+          (ignore-errors (carriage-transport--watchdog-stop buffer)))))
     (ignore-errors (gptel-abort buffer))
-    ;; If GPTel never delivers terminal callback, force-finalize as abort.
+    (ignore-errors
+      (carriage-transport-gptel-emergency-cleanup t "abort-requested"))
+    ;; If GPTel never delivers terminal callback, keep this as diagnostics-only:
+    ;; the request has already been invalidated and transport-complete/abort path
+    ;; is responsible for collapsing UI state. Do not try to correlate local GPTel id
+    ;; with transport rid here.
     (carriage-transport-gptel--schedule
      0.6
      (lambda ()
-       (when (buffer-live-p buffer)
+       (when (and (buffer-live-p buffer)
+                  carriage-transport-gptel-diagnostics)
          (with-current-buffer buffer
            (unless carriage-transport-gptel--finalized
-             (carriage-transport-gptel--finalize
-              buffer id 'abort 'abort (list :status "abort-timeout") requested-model nil))))))))
+             (carriage-log
+              "Transport[gptel] ABORT timeout fallback suppressed id=%s active-rid=%s"
+              id
+              (or carriage-transport--request-id "-")))))))))
 
 (defun carriage-transport-gptel--dispatch-init (buffer id model source prompt abort-fn)
   "Initialize per-request state, logging, and abort handler."
@@ -1490,8 +1634,16 @@ Generic non-image files are omitted from `gptel-context'."
      (ignore-errors
        (carriage-transport-gptel--log-gptel-proc-buffer buffer id "WD-TIMEOUT"))
      (funcall abort-fn)
-     (carriage-transport-gptel--finalize
-      buffer id 'timeout nil (list :status "timeout") nil))))
+     ;; Do not compare GPTel-local id with transport rid here.
+     ;; Abort path already invalidates request lifecycle and closes callback insertion.
+     (when (and (buffer-live-p buffer)
+                carriage-transport-gptel-diagnostics)
+       (with-current-buffer buffer
+         (unless carriage-transport-gptel--finalized
+           (carriage-log
+            "Transport[gptel] WD timeout fallback suppressed id=%s active-rid=%s"
+            id
+            (or carriage-transport--request-id "-"))))))))
 
 
 (defun carriage-transport-gptel--dispatch-prepare-payload (prompt system)
@@ -1767,7 +1919,7 @@ This implementation is minimal and callback-driven, with watchdog + cleanup."
     (with-current-buffer buffer
       (let* ((t0 (float-time))
              (cb (carriage-transport-gptel--make-callback buffer id model))
-             (abort-fn (carriage-transport-gptel--dispatch-make-abort buffer id))
+             (abort-fn (carriage-transport-gptel--dispatch-make-abort buffer id model))
              (t1 (float-time))
              (attachments (carriage-transport-gptel--collect-attachments buffer))
              (t2 (float-time))

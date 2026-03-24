@@ -2756,6 +2756,36 @@ Notes:
 (defvar-local carriage--send-prep-cancelled nil
   "Non-nil when the current Send preparation was cancelled.")
 
+(defvar-local carriage--send-in-flight nil
+  "Non-nil when a Send pipeline is currently active in this buffer.
+
+This guards against duplicate/reentrant send starts caused by stacked wrappers
+(async prepare advice, legacy redirects, repeated key invocation, etc).")
+
+(defvar-local carriage--send-dispatch-scheduled nil
+  "Non-nil when a deferred send dispatch timer was already scheduled for this buffer.
+
+This prevents duplicate `run-at-time 0' scheduling before the first deferred
+send tick actually begins request preparation.")
+
+(defvar-local carriage-mode--send-prepare-reentry nil
+  "Non-nil while async send preflight re-enters the original send command.
+
+Used to bypass `carriage-mode--send-prepare-async-around' on the second call
+that is intentionally triggered after async warmup completes.")
+
+(defvar-local carriage--send-in-flight nil
+  "Non-nil when a Send pipeline is currently active in this buffer.
+
+This guards against duplicate/reentrant send starts caused by stacked wrappers
+(async prepare advice, legacy redirects, repeated key invocation, etc).")
+
+(defvar-local carriage--send-dispatch-scheduled nil
+  "Non-nil when a deferred send dispatch timer was already scheduled for this buffer.
+
+This prevents duplicate `run-at-time 0' scheduling before the first deferred
+send tick actually begins request preparation.")
+
 (defcustom carriage-mode-send-prep-watchdog-enabled t
   "When non-nil, enable a watchdog timer for the Send preparation phase.
 
@@ -2851,7 +2881,12 @@ Runs in the main thread (timer callback)."
       (when (and carriage-mode-auto-open-traffic (not (bound-and-true-p noninteractive)))
         (ignore-errors (carriage-show-traffic)))
       (carriage--ensure-transport)
-      (let* ((unreg (carriage-transport-begin)))
+      (let* ((unreg
+              (carriage-transport-begin
+               (lambda ()
+                 (setq carriage--send-in-flight nil)
+                 (setq carriage--send-dispatch-scheduled nil)
+                 (ignore-errors (carriage-clear-abort-handler))))))
         (ignore unreg)
         (carriage-traffic-log 'out "request begin: source=%s backend=%s model=%s"
                               source backend model)
@@ -2868,12 +2903,16 @@ Runs in the main thread (timer callback)."
               t)
           (quit
            ;; Do not leave UI stuck if user aborts during dispatch.
+           (setq carriage--send-in-flight nil)
+           (setq carriage--send-dispatch-scheduled nil)
            (carriage-log "send-%s: keyboard-quit; aborting" (or source 'buffer))
            (ignore-errors (carriage-abort-current))
            (ignore-errors (carriage-transport-complete t))
            (ignore-errors (carriage-ui-set-state 'idle))
            nil)
           (error
+           (setq carriage--send-in-flight nil)
+           (setq carriage--send-dispatch-scheduled nil)
            (carriage-log "send-%s error: %s" (or source 'buffer) (error-message-string err))
            (ignore-errors (carriage-transport-complete t))
            (ignore-errors (carriage-ui-set-state 'idle))
@@ -2945,7 +2984,9 @@ synchronously (still outside the immediate interactive command tick)."
                                     (carriage-log "send: prep done but cancelled source=%s job=%s"
                                                   source job-id)
                                     (ignore-errors (carriage--preloader-stop))
-                                    (ignore-errors (carriage-ui-set-state 'idle)))
+                                    (ignore-errors (carriage-ui-set-state 'idle))
+                                    (setq carriage--send-in-flight nil)
+                                    (setq carriage--send-dispatch-scheduled nil))
                                    ((plist-get res :ok)
                                     (carriage-log "send: prep ok source=%s job=%s elapsed=%.3fs"
                                                   source job-id (or (plist-get res :elapsed) 0.0))
@@ -2969,6 +3010,8 @@ synchronously (still outside the immediate interactive command tick)."
                                     (ignore-errors (carriage-clear-abort-handler))
                                     (ignore-errors (carriage--preloader-stop))
                                     (ignore-errors (carriage-ui-set-state 'error))
+                                    (setq carriage--send-in-flight nil)
+                                    (setq carriage--send-dispatch-scheduled nil)
                                     (when (not (bound-and-true-p noninteractive))
                                       (message "Carriage: подготовка запроса не удалась: %s"
                                                (or (plist-get res :error) "unknown error"))))))))))))))
@@ -3008,6 +3051,8 @@ synchronously (still outside the immediate interactive command tick)."
                (ignore-errors (carriage-clear-abort-handler))
                (ignore-errors (carriage--preloader-stop))
                (ignore-errors (carriage-ui-set-state 'idle))
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
                nil)
               (error
                (carriage-log "send: prep sync failed source=%s job=%s err=%s"
@@ -3017,6 +3062,8 @@ synchronously (still outside the immediate interactive command tick)."
                (ignore-errors (carriage-clear-abort-handler))
                (ignore-errors (carriage--preloader-stop))
                (ignore-errors (carriage-ui-set-state 'error))
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
                (when (not (bound-and-true-p noninteractive))
                  (message "Carriage: подготовка запроса не удалась: %s"
                           (error-message-string e)))
@@ -3042,33 +3089,45 @@ synchronously (still outside the immediate interactive command tick)."
   (let ((current-prefix-arg prefix))
     (when (buffer-live-p srcbuf)
       (with-current-buffer srcbuf
-        (condition-case err
-            (progn
-              (carriage-log "send-buffer: deferred tick; starting prepare (backend=%s model=%s)"
-                            carriage-mode-backend carriage-mode-model)
-              (carriage--send-prepare-and-dispatch
-               'buffer
-               srcbuf
-               carriage-mode-backend
-               carriage-mode-model
-               carriage-mode-intent
-               carriage-mode-suite
-               (or (and (markerp carriage--stream-origin-marker)
-                        (buffer-live-p (marker-buffer carriage--stream-origin-marker))
-                        carriage--stream-origin-marker)
-                   origin-marker)))
-          (quit
-           (carriage-log "send-buffer: deferred tick quit; aborting")
-           (ignore-errors (carriage-clear-abort-handler))
-           (ignore-errors (carriage--preloader-stop))
-           (ignore-errors (carriage-ui-set-state 'idle)))
-          (error
-           (carriage-log "send-buffer: deferred tick ERROR: %s" (error-message-string err))
-           (ignore-errors (carriage-clear-abort-handler))
-           (ignore-errors (carriage--preloader-stop))
-           (ignore-errors (carriage-ui-set-state 'error))
-           (unless (bound-and-true-p noninteractive)
-             (message "Carriage: send-buffer crashed: %s" (error-message-string err)))))))))
+        ;; ===> Поднимаем флаг in-flight только ЗДЕСЬ! (на deferred tick)
+        (setq carriage--send-dispatch-scheduled nil)
+        (if carriage--send-in-flight
+            (carriage-log "send-buffer: deferred tick dropped (already in-flight)")
+          (progn
+            (setq carriage--send-in-flight t)
+            (condition-case err
+                (progn
+                  (carriage-log "send-buffer: deferred tick; starting prepare (backend=%s model=%s)"
+                                carriage-mode-backend carriage-mode-model)
+                  (carriage--send-prepare-and-dispatch
+                   'buffer
+                   srcbuf
+                   carriage-mode-backend
+                   carriage-mode-model
+                   carriage-mode-intent
+                   carriage-mode-suite
+                   (or (and (markerp carriage--stream-origin-marker)
+                            (buffer-live-p (marker-buffer carriage--stream-origin-marker))
+                            carriage--stream-origin-marker)
+                       origin-marker)))
+              (quit
+               (carriage-log "send-buffer: deferred tick quit; aborting")
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
+               (setq carriage-mode--send-prepare-token nil)
+               (ignore-errors (carriage-clear-abort-handler))
+               (ignore-errors (carriage--preloader-stop))
+               (ignore-errors (carriage-ui-set-state 'idle)))
+              (error
+               (carriage-log "send-buffer: deferred tick ERROR: %s" (error-message-string err))
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
+               (setq carriage-mode--send-prepare-token nil)
+               (ignore-errors (carriage-clear-abort-handler))
+               (ignore-errors (carriage--preloader-stop))
+               (ignore-errors (carriage-ui-set-state 'error))
+               (unless (bound-and-true-p noninteractive)
+                 (message "Carriage: send-buffer crashed: %s" (error-message-string err)))))))))))
 
 ;;; Helper: compute insertion point for stream origin in carriage-send-buffer
 (defun carriage--send-buffer--calc-origin-marker ()
@@ -3092,22 +3151,45 @@ synchronously (still outside the immediate interactive command tick)."
 (defun carriage-send-buffer ()
   "Send entire buffer to LLM according to current Intent/Suite."
   (interactive)
-  ;; Early, immediate feedback before any heavy preparation:
-  (carriage-ui-set-state 'sending)
-  ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
-  (when (fboundp 'carriage-ui-apply-reset)
-    (ignore-errors (carriage-ui-apply-reset)))
-  ;; Give redisplay a chance right away
-  (sit-for 0)
-  ;; Defer heavy preparation to the next tick so UI updates (spinner/state) are visible instantly.
-  (let ((srcbuf (current-buffer))
-        (prefix current-prefix-arg)
-        (origin-marker (carriage--send-buffer--calc-origin-marker)))
-    (carriage--send-buffer--prepare-stream origin-marker)
-    (run-at-time
-     0 nil
-     (lambda ()
-       (carriage--send-buffer--deferred-dispatch srcbuf origin-marker prefix)))))
+  (if (or carriage--send-in-flight carriage--send-dispatch-scheduled)
+      (progn
+        (carriage-log "send-buffer: dropped duplicate invocation buf=%s in-flight=%s scheduled=%s"
+                      (buffer-name (current-buffer))
+                      (if carriage--send-in-flight "t" "nil")
+                      (if carriage--send-dispatch-scheduled "t" "nil"))
+        (unless (bound-and-true-p noninteractive)
+          (message "Carriage: запрос уже выполняется")))
+    ;; Важно: здесь нельзя рано ставить in-flight=t, потому что async preflight advice
+    ;; повторно вызывает эту же команду с `carriage-mode--send-prepare-reentry'.
+    ;; Если флаг поднят слишком рано, второй (канонический) вход режется и запрос
+    ;; вообще не уходит.
+    ;;
+    ;; На этом уровне держим только scheduled-флаг: он блокирует повторные клики,
+    ;; но не ломает reentry после завершения preflight.
+    (setq carriage--send-dispatch-scheduled t)
+    (carriage-ui-set-state 'sending)
+    ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
+    (when (fboundp 'carriage-ui-apply-reset)
+      (ignore-errors (carriage-ui-apply-reset)))
+    ;; Give redisplay a chance right away
+    (sit-for 0)
+    ;; Defer heavy preparation to the next tick so UI updates (spinner/state) are visible instantly.
+    (let ((srcbuf (current-buffer))
+          (prefix current-prefix-arg)
+          (origin-marker (carriage--send-buffer--calc-origin-marker)))
+      (carriage--send-buffer--prepare-stream origin-marker)
+      (run-at-time
+       0 nil
+       (lambda ()
+         (when (buffer-live-p srcbuf)
+           (with-current-buffer srcbuf
+             ;; <--- Здесь, на deferred-tick, разрешён только ОДИН вход!
+             (if carriage--send-in-flight
+                 (progn
+                   (carriage-log "send-buffer: deferred tick dropped (already in-flight)")
+                   (setq carriage--send-dispatch-scheduled nil))
+               (setq carriage--send-in-flight t)
+               (carriage--send-buffer--deferred-dispatch srcbuf origin-marker prefix)))))))))
 
 ;;; Helper: calculate origin marker for send-subtree (new line after cursor if needed)
 (defun carriage--send-subtree--calc-origin-marker ()
@@ -3141,54 +3223,84 @@ synchronously (still outside the immediate interactive command tick)."
   (let ((current-prefix-arg prefix))
     (when (buffer-live-p srcbuf)
       (with-current-buffer srcbuf
-        (condition-case err
-            (progn
-              (carriage-log "send-subtree: deferred tick; starting prepare (backend=%s model=%s)"
-                            carriage-mode-backend carriage-mode-model)
-              (carriage--send-prepare-and-dispatch
-               'subtree
-               srcbuf
-               carriage-mode-backend
-               carriage-mode-model
-               carriage-mode-intent
-               carriage-mode-suite
-               (or (and (markerp carriage--stream-origin-marker)
-                        (buffer-live-p (marker-buffer carriage--stream-origin-marker))
-                        carriage--stream-origin-marker)
-                   origin-marker)))
-          (quit
-           (carriage-log "send-subtree: deferred tick quit; aborting")
-           (ignore-errors (carriage-clear-abort-handler))
-           (ignore-errors (carriage--preloader-stop))
-           (ignore-errors (carriage-ui-set-state 'idle)))
-          (error
-           (carriage-log "send-subtree: deferred tick ERROR: %s" (error-message-string err))
-           (ignore-errors (carriage-clear-abort-handler))
-           (ignore-errors (carriage--preloader-stop))
-           (ignore-errors (carriage-ui-set-state 'error))
-           (unless (bound-and-true-p noninteractive)
-             (message "Carriage: send-subtree crashed: %s" (error-message-string err)))))))))
+        (setq carriage--send-dispatch-scheduled nil)
+        (if carriage--send-in-flight
+            (carriage-log "send-subtree: deferred tick dropped (already in-flight)")
+          (progn
+            (setq carriage--send-in-flight t)
+            (condition-case err
+                (progn
+                  (carriage-log "send-subtree: deferred tick; starting prepare (backend=%s model=%s)"
+                                carriage-mode-backend carriage-mode-model)
+                  (carriage--send-prepare-and-dispatch
+                   'subtree
+                   srcbuf
+                   carriage-mode-backend
+                   carriage-mode-model
+                   carriage-mode-intent
+                   carriage-mode-suite
+                   (or (and (markerp carriage--stream-origin-marker)
+                            (buffer-live-p (marker-buffer carriage--stream-origin-marker))
+                            carriage--stream-origin-marker)
+                       origin-marker)))
+              (quit
+               (carriage-log "send-subtree: deferred tick quit; aborting")
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
+               (setq carriage-mode--send-prepare-token nil)
+               (ignore-errors (carriage-clear-abort-handler))
+               (ignore-errors (carriage--preloader-stop))
+               (ignore-errors (carriage-ui-set-state 'idle)))
+              (error
+               (carriage-log "send-subtree: deferred tick ERROR: %s" (error-message-string err))
+               (setq carriage--send-in-flight nil)
+               (setq carriage--send-dispatch-scheduled nil)
+               (setq carriage-mode--send-prepare-token nil)
+               (ignore-errors (carriage-clear-abort-handler))
+               (ignore-errors (carriage--preloader-stop))
+               (ignore-errors (carriage-ui-set-state 'error))
+               (unless (bound-and-true-p noninteractive)
+                 (message "Carriage: send-subtree crashed: %s" (error-message-string err)))))))))))
 
 ;;;###autoload
 (defun carriage-send-subtree ()
   "Send current org subtree to LLM according to current Intent/Suite."
   (interactive)
-  ;; Early, immediate feedback before any heavy preparation:
-  (carriage-ui-set-state 'sending)
-  ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
-  (when (fboundp 'carriage-ui-apply-reset)
-    (ignore-errors (carriage-ui-apply-reset)))
-  ;; Give redisplay a chance right away
-  (sit-for 0)
-  ;; Defer heavy preparation to the next tick so UI updates (spinner/state) are visible instantly.
-  (let ((srcbuf (current-buffer))
-        (prefix current-prefix-arg)
-        (origin-marker (carriage--send-subtree--calc-origin-marker)))
-    (carriage--send-subtree--prepare-stream origin-marker)
-    (run-at-time
-     0 nil
-     (lambda ()
-       (carriage--send-subtree--deferred-dispatch srcbuf origin-marker prefix)))))
+  (if (or carriage--send-in-flight carriage--send-dispatch-scheduled)
+      (progn
+        (carriage-log "send-subtree: dropped duplicate invocation buf=%s in-flight=%s scheduled=%s"
+                      (buffer-name (current-buffer))
+                      (if carriage--send-in-flight "t" "nil")
+                      (if carriage--send-dispatch-scheduled "t" "nil"))
+        (unless (bound-and-true-p noninteractive)
+          (message "Carriage: запрос уже выполняется")))
+    ;; См. комментарий в `carriage-send-buffer': не поднимаем in-flight до реального
+    ;; старта dispatch pipeline, иначе reentry после async preflight будет ошибочно
+    ;; считаться дублем и subtree-send не стартует вовсе.
+    (setq carriage--send-dispatch-scheduled t)
+    (carriage-ui-set-state 'sending)
+    ;; Reset apply-status when starting a new request (requirement: Apply must reappear only after next apply attempt).
+    (when (fboundp 'carriage-ui-apply-reset)
+      (ignore-errors (carriage-ui-apply-reset)))
+    ;; Give redisplay a chance right away
+    (sit-for 0)
+    ;; Defer heavy preparation to the next tick so UI updates (spinner/state) are visible instantly.
+    (let ((srcbuf (current-buffer))
+          (prefix current-prefix-arg)
+          (origin-marker (carriage--send-subtree--calc-origin-marker)))
+      (carriage--send-subtree--prepare-stream origin-marker)
+      (run-at-time
+       0 nil
+       (lambda ()
+         (when (buffer-live-p srcbuf)
+           (with-current-buffer srcbuf
+             ;; <--- Только тут! Разрешён только ОДИН вход.
+             (if carriage--send-in-flight
+                 (progn
+                   (carriage-log "send-subtree: deferred tick dropped (already in-flight)")
+                   (setq carriage--send-dispatch-scheduled nil))
+               (setq carriage--send-in-flight t)
+               (carriage--send-subtree--deferred-dispatch srcbuf origin-marker prefix)))))))))
 
 ;;;###autoload
 (defun carriage-dry-run-at-point ()
@@ -3932,6 +4044,21 @@ In v1 this calls a buffer-local handler registered by the transport/pipeline.
 If no handler is present, stops UI spinner and reports no active request."
   (interactive)
   (let ((handler carriage--abort-handler))
+    (ignore-errors
+      (when (fboundp 'carriage-mode--send-prepare-cancel)
+        (carriage-mode--send-prepare-cancel)))
+    ;; Immediately block any further deferred send work in this buffer and
+    ;; mark current request bookkeeping as dead before adapter callbacks race in.
+    (setq carriage--send-in-flight nil)
+    (setq carriage--send-dispatch-scheduled nil)
+    (when (boundp 'carriage-transport--request-id)
+      (setq carriage-transport--request-id nil))
+    (when (boundp 'carriage-transport--watchdog-abort-fn)
+      (setq carriage-transport--watchdog-abort-fn nil))
+    (when (boundp 'carriage-transport--watchdog-abort-rid)
+      (setq carriage-transport--watchdog-abort-rid nil))
+    (when (fboundp 'carriage-transport--watchdog-stop)
+      (ignore-errors (carriage-transport--watchdog-stop (current-buffer))))
     (cond
      ((functionp handler)
       ;; Clear handler first to avoid reentrancy; then attempt abort.
@@ -4005,6 +4132,8 @@ gets into a broken/hung state and subsequent requests fail until Emacs restart."
             (ignore-errors (carriage--preloader-stop)))
           (when (fboundp 'carriage-ui-set-state)
             (ignore-errors (carriage-ui-set-state 'idle)))
+          (setq carriage--send-in-flight nil)
+          (setq carriage--send-dispatch-scheduled nil)
 
           ;; Invalidate project-map cache (safe; avoids reusing a broken state).
           (when (fboundp 'carriage-context-project-map-invalidate)
@@ -4666,25 +4795,98 @@ Token plist:
           token)))))
 
 (defun carriage-mode--send-prepare-async-around (orig &rest args)
-  "Advice around Send commands: async warm context/map, then call ORIG."
+  "Advice around Send commands: async warm context/map, then call ORIG once.
+
+Important:
+- This advice must never re-enter ORIG from its own completion callback.
+- Re-entering ORIG creates a second send lifecycle (new stream reset, new timers,
+  another deferred dispatch), which is exactly the duplicate-send symptom we saw.
+- Therefore preflight completion must directly call the real prepare+dispatch path."
   (if (or noninteractive
           (not carriage-mode-send-prepare-async)
           ;; If async collector is unavailable, fall back to original.
           (not (require 'carriage-context nil t))
-          (not (fboundp 'carriage-context-collect-async)))
+          (not (fboundp 'carriage-context-collect-async))
+          ;; Legacy bypass knob: when explicitly re-entering, do not preflight again.
+          (bound-and-true-p carriage-mode--send-prepare-reentry))
       (apply orig args)
     (let* ((buf (current-buffer))
            (root (or (and (fboundp 'carriage-project-root) (ignore-errors (carriage-project-root)))
                      default-directory))
-           (orig-fn orig)
-           (orig-args (copy-sequence args)))
-      ;; Start preflight; dispatch only after warm completes (or times out).
-      (carriage-mode--send-prepare--start
-       buf root
-       (lambda ()
-         (when (buffer-live-p buf)
-           (with-current-buffer buf
-             (ignore-errors (apply orig-fn orig-args)))))))))
+           (source (cond
+                    ((eq orig 'carriage-send-subtree) 'subtree)
+                    (t 'buffer))))
+      (with-current-buffer buf
+        (if carriage-mode--send-prepare-token
+            (progn
+              (carriage-log "send-prepare: drop duplicate preflight buf=%s reason=token-active in-flight=%s scheduled=%s"
+                            (buffer-name buf)
+                            (if carriage--send-in-flight "t" "nil")
+                            (if carriage--send-dispatch-scheduled "t" "nil"))
+              nil)
+          ;; Mark that a deferred dispatch is pending right now, so duplicate user
+          ;; invocations are dropped while preflight is warming caches.
+          (setq carriage--send-dispatch-scheduled t)
+          ;; Keep UX semantics of the public send commands.
+          (carriage-ui-set-state 'sending)
+          (when (fboundp 'carriage-ui-apply-reset)
+            (ignore-errors (carriage-ui-apply-reset)))
+          (sit-for 0)
+          (let ((origin-marker
+                 (cond
+                  ((eq source 'subtree)
+                   (carriage--send-subtree--calc-origin-marker))
+                  (t
+                   (carriage--send-buffer--calc-origin-marker)))))
+            (cond
+             ((eq source 'subtree)
+              (carriage--send-subtree--prepare-stream origin-marker))
+             (t
+              (carriage--send-buffer--prepare-stream origin-marker)))
+            ;; Start preflight; when it completes, jump directly into the canonical
+            ;; prepare+dispatch helper instead of calling ORIG again.
+            (carriage-mode--send-prepare--start
+             buf root
+             (lambda ()
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (setq carriage--send-dispatch-scheduled nil)
+                   (setq carriage--send-in-flight t)
+                   (condition-case err
+                       (progn
+                         (carriage-log "send-%s: async-preflight ready; starting direct prepare+dispatch (backend=%s model=%s)"
+                                       source carriage-mode-backend carriage-mode-model)
+                         (carriage--send-prepare-and-dispatch
+                          source
+                          buf
+                          carriage-mode-backend
+                          carriage-mode-model
+                          carriage-mode-intent
+                          carriage-mode-suite
+                          (or (and (markerp carriage--stream-origin-marker)
+                                   (buffer-live-p (marker-buffer carriage--stream-origin-marker))
+                                   carriage--stream-origin-marker)
+                              origin-marker)))
+                     (quit
+                      (carriage-log "send-%s: async-preflight dispatch quit; aborting" source)
+                      (setq carriage--send-in-flight nil)
+                      (setq carriage--send-dispatch-scheduled nil)
+                      (setq carriage-mode--send-prepare-token nil)
+                      (ignore-errors (carriage-clear-abort-handler))
+                      (ignore-errors (carriage--preloader-stop))
+                      (ignore-errors (carriage-ui-set-state 'idle)))
+                     (error
+                      (carriage-log "send-%s: async-preflight dispatch ERROR: %s"
+                                    source (error-message-string err))
+                      (setq carriage--send-in-flight nil)
+                      (setq carriage--send-dispatch-scheduled nil)
+                      (setq carriage-mode--send-prepare-token nil)
+                      (ignore-errors (carriage-clear-abort-handler))
+                      (ignore-errors (carriage--preloader-stop))
+                      (ignore-errors (carriage-ui-set-state 'error))
+                      (unless (bound-and-true-p noninteractive)
+                        (message "Carriage: send crashed after async preflight: %s"
+                                 (error-message-string err)))))))))))))))
 
 (defvar carriage-mode--send-prepare-advice-installed nil
   "Non-nil when async Send prepare advice was installed.")
@@ -4864,28 +5066,8 @@ the whole buffer."
   (interactive)
   (call-interactively #'carriage-send-buffer))
 
-;; If legacy unprefixed commands are present and come from Carriage, redirect them.
-(carriage--maybe-alias-legacy-send-command 'send-buffer 'carriage-send-buffer)
-(carriage--maybe-alias-legacy-send-command 'send-subtree 'carriage-send-subtree)
-
-;; Some setups load old Carriage stubs lazily/late (autoload/native-compiled),
-;; so the first alias attempt above may run before `send-buffer' becomes fboundp.
-;; Keep a lightweight after-load hook to re-apply aliases when new code is loaded.
-(defvar carriage--legacy-send-alias-hook-installed nil
-  "Non-nil when legacy send alias after-load hook has been installed.")
-
-(defun carriage--legacy-send-alias-ensure (&optional _file)
-  "Ensure legacy unprefixed send commands are aliased to supported Carriage entry points.
-Best-effort; never signals."
-  (ignore-errors
-    (carriage--maybe-alias-legacy-send-command 'send-buffer 'carriage-send-buffer)
-    (carriage--maybe-alias-legacy-send-command 'send-subtree 'carriage-send-subtree)
-    (carriage--legacy-send-redirect-ensure))
-  t)
-
-(unless carriage--legacy-send-alias-hook-installed
-  (setq carriage--legacy-send-alias-hook-installed t)
-  (add-hook 'after-load-functions #'carriage--legacy-send-alias-ensure))
+;; If legacy unprefixed commands are present and come from Carriage, just use advice-based redirect (see below).
+;; defalias-based legacy redirect убран, чтобы не вызывать потенциальную двукратную цепочку advice/alias.
 
 ;; -------------------------------------------------------------------
 ;; Legacy unprefixed send commands: runtime redirect (local, non-clobbering)
