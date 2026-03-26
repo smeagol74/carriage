@@ -3161,15 +3161,13 @@ Keys (optional): :source :time-start :time-last :model :provider
   (format "%.1f" (max 0.0 (- (or t1 (float-time)) (or t0 (float-time))))))
 
 (defun carriage-ui--set-tooltip (s)
-  "Set state tooltip to S without invalidating the whole modeline.
-This avoids heavy redisplay churn during streaming; we only tick the line (throttled)."
+  "Set state tooltip to S without forcing full modeline churn."
   (setq carriage--ui-state-tooltip
         (when (and (stringp s) (> (length s) 0))
-          (let* ((mx (or carriage-mode-state-tooltip-max-chars 1000)))
+          (let ((mx (or carriage-mode-state-tooltip-max-chars 1000)))
             (carriage-ui--trim-right s mx))))
-  ;; Do not invalidate the whole modeline cache on tooltip-only changes.
-  ;; A simple mode-line tick is enough; segments will pick up the new help-echo.
-  ;; Throttle the tick to avoid per-chunk mode-line work during streaming.
+  ;; Tooltip changes alone should not continuously rebuild the whole modeline.
+  ;; Keep a lightweight local refresh and only bump tooltip version at a throttled rate.
   (let* ((now (float-time))
          (min (or (and (boundp 'carriage-ui-tooltip-update-interval)
                        carriage-ui-tooltip-update-interval)
