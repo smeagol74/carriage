@@ -3167,7 +3167,7 @@ Keys (optional): :source :time-start :time-last :model :provider
           (let ((mx (or carriage-mode-state-tooltip-max-chars 1000)))
             (carriage-ui--trim-right s mx))))
   ;; Tooltip changes alone should not continuously rebuild the whole modeline.
-  ;; Keep a lightweight local refresh and only bump tooltip version at a throttled rate.
+  ;; Only bump tooltip version at a throttled rate; avoid immediate redisplay forcing here.
   (let* ((now (float-time))
          (min (or (and (boundp 'carriage-ui-tooltip-update-interval)
                        carriage-ui-tooltip-update-interval)
@@ -3180,8 +3180,7 @@ Keys (optional): :source :time-start :time-last :model :provider
               (>= (- now last) min))
       (setq carriage-ui--tooltip-last-update now)
       (setq carriage-ui--state-tooltip-version
-            (1+ (or carriage-ui--state-tooltip-version 0)))
-      (force-mode-line-update))))
+            (1+ (or carriage-ui--state-tooltip-version 0))))))
 
 (defun carriage-ui--i18n (key &rest args)
   "Format i18n KEY with ARGS when available; fallback to format."
