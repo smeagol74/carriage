@@ -2573,7 +2573,7 @@ If a fresh cache record is found, returns it early."
                                why method (or elapsed 0.0) r)
         (carriage-context--project-map--empty-result why method elapsed)))))
 
-(defun carriage-context-project-map-build (&optional root)
+(defun carriage-context-project-map-build (&optional root &rest _args)
   "Build Project Map record plist for ROOT (or project root).
 
 Return plist keys:
@@ -2587,7 +2587,14 @@ Best-effort; never signals.
 
 Important perf rule:
 - When `carriage-context--project-map-allow-compute` is nil, this function MUST NOT
-  spawn processes or traverse directories. It may return a fresh cached value."
+  spawn processes or traverse directories. It may return a fresh cached value.
+
+Cache & invalidation semantics:
+- Cache is keyed by ROOT and controlled via `carriage-context-project-map-cache-ttl'.
+- External callers (including ERT tests) are expected to call
+  `carriage-context-project-map-invalidate' when filesystem layout changes
+  (create/rename/delete). This keeps the implementation simple and avoids
+  background watchers in normal usage."
   (let* ((r (or root (carriage-context--project-root)))
          (ttl (or carriage-context-project-map-cache-ttl 0.0)))
     (carriage-context--project-map--validate-root-or-return
@@ -2600,6 +2607,7 @@ Important perf rule:
            (lambda ()
              (let* ((lr (carriage-context--project-map--files r)))
                (carriage-context--project-map--build-or-empty lr r))))))))))
+
 (defun carriage-context-project-map-block (&optional root)
   "Return a `#+begin_map … #+end_map` block string for ROOT (or current project), or nil.
 
