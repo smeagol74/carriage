@@ -856,20 +856,55 @@ Returns updated STATE."
           (carriage-context--dbg "collect: skip %s → %s" p (plist-get norm :reason))
           state)
       (let* ((rel (plist-get norm :rel))
-             (true (plist-get norm :true)))
+             (true (plist-get norm :true))
+             ;; IMPORTANT: `file-truename' may succeed even if the file does not exist.
+             ;; We must explicitly check existence to avoid false exists=true in begin_state_manifest.
+             (exists (and (stringp true) (file-exists-p true)))
+             (regular (and exists (file-regular-p true))))
         (if (not (carriage-context--state-mark-seen true state))
             state
-          (if (and (eq carriage-context-secret-path-policy 'warn-skip)
-                   (carriage-context--secret-path-p rel true))
-              (progn
-                (setq state (carriage-context--push-warning
-                             (format "secret-path, include path only: %s" rel)
-                             state))
-                (setq state (carriage-context--push-file
-                             (list :rel rel :true true :content nil :reason 'secret-path)
-                             state))
-                (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
-                state)
+          (cond
+           ;; Missing: include path-only but mark exists=false so apply gatekeeper doesn't
+           ;; forbid :op create due to a bogus manifest row.
+           ((not exists)
+            (setq state (carriage-context--push-warning
+                         (format "missing, include path only: %s" rel)
+                         state))
+            (setq state (carriage-context--push-file
+                         (list :rel rel :true true :content nil :reason 'missing
+                               :exists nil :has_text nil)
+                         state))
+            (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
+            (carriage-context--dbg "collect: missing %s" rel)
+            state)
+
+           ;; Not a regular file (dir/device/etc): include path-only, exists=true.
+           ((not regular)
+            (setq state (carriage-context--push-warning
+                         (format "not a regular file, include path only: %s" rel)
+                         state))
+            (setq state (carriage-context--push-file
+                         (list :rel rel :true true :content nil :reason 'not-regular
+                               :exists t :has_text nil)
+                         state))
+            (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
+            (carriage-context--dbg "collect: not-regular %s" rel)
+            state)
+
+           ;; Secret-path policy: include path-only (but exists=true).
+           ((and (eq carriage-context-secret-path-policy 'warn-skip)
+                 (carriage-context--secret-path-p rel true))
+            (setq state (carriage-context--push-warning
+                         (format "secret-path, include path only: %s" rel)
+                         state))
+            (setq state (carriage-context--push-file
+                         (list :rel rel :true true :content nil :reason 'secret-path
+                               :exists t :has_text nil)
+                         state))
+            (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
+            state)
+
+           (t
             (let* ((attrs (ignore-errors (file-attributes true)))
                    (sb0 (and attrs (nth 7 attrs)))
                    (total (plist-get state :total-bytes)))
@@ -880,7 +915,8 @@ Returns updated STATE."
                                  (format "limit reached, include path only: %s" rel)
                                  state))
                     (setq state (carriage-context--push-file
-                                 (list :rel rel :true true :content nil :reason 'size-limit)
+                                 (list :rel rel :true true :content nil :reason 'size-limit
+                                       :exists t :has_text nil)
                                  state))
                     (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
                     (carriage-context--dbg "collect: size-limit (pre) for %s (sb=%s total=%s)" rel sb0 total)
@@ -890,7 +926,8 @@ Returns updated STATE."
                   (if (not (car rd))
                       (progn
                         (setq state (carriage-context--push-file
-                                     (list :rel rel :true true :content nil :reason (cdr rd))
+                                     (list :rel rel :true true :content nil :reason (cdr rd)
+                                           :exists t :has_text nil)
                                      state))
                         (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
                         (carriage-context--dbg "collect: omit %s reason=%s" rel (cdr rd))
@@ -904,18 +941,20 @@ Returns updated STATE."
                                          (format "limit reached, include path only: %s" rel)
                                          state))
                             (setq state (carriage-context--push-file
-                                         (list :rel rel :true true :content nil :reason 'size-limit)
+                                         (list :rel rel :true true :content nil :reason 'size-limit
+                                               :exists t :has_text nil)
                                          state))
                             (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
                             (carriage-context--dbg "collect: size-limit for %s (sb=%s total=%s)" rel sb total2)
                             state)
                         (setq state (plist-put state :total-bytes (+ total2 sb)))
                         (setq state (carriage-context--push-file
-                                     (list :rel rel :true true :content s)
+                                     (list :rel rel :true true :content s
+                                           :exists t :has_text t)
                                      state))
                         (setq state (plist-put state :included (1+ (plist-get state :included))))
                         (carriage-context--dbg "collect: include %s (bytes=%s total=%s)" rel sb (+ total2 sb))
-                        state))))))))))))
+                        state)))))))))))))
 
 (defun carriage-context--collect-finalize (state)
   "Finalize STATE into result plist compatible with carriage-context-collect."
