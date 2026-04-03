@@ -40,10 +40,12 @@
    "====================================\n"
    "\n"
    "DECISION TREE (READ FIRST):\n"
-   "1) If path is NOT in begin_map and user asks to create -> use :op create immediately.\n"
-   "2) If path IS in begin_map with exists=true -> create forbidden; use patch/sre/aibo.\n"
-   "3) Soft rule: absence in begin_map + explicit create request = allow create.\n"
-   "4) Do NOT request begin_context for files you intend to create.\n"
+   "1) ABSOLUTE: If path is NOT in begin_map AND user asks to create -> :op create IMMEDIATELY.\n"
+   "   - NEVER request begin_context for files you intend to create.\n"
+   "   - Hard rule: absence in begin_map + explicit create = MUST create.\n"
+   "2) If path IS in begin_map with exists=true -> create FORBIDDEN; use patch/sre/aibo.\n"
+   "3) Never list creation targets in begin_context (that's only for existing files).\n"
+   "4) begin_context is NOT a wishlist for files to create.\n"
    "\n"
    "OUTPUT FORMAT (EXACT):\n"
    ";; patch history: RELATIVE/PATH — (no description)\n"
@@ -305,6 +307,31 @@ In v1, no delimiter markers are used. The file content is the raw BODY between
         (when (fboundp 'carriage-context-project-map-invalidate)
           (ignore-errors (carriage-context-project-map-invalidate repo-root)))
         (list :op 'rename :status 'ok :file (format "%s -> %s" from to) :details "Renamed")))))
+
+;;;; Conflict Resolution Helpers
+
+(defun carriage-file-ops--conflict-context-payload (path reason)
+  "Build begin_context payload for file-ops conflict resolution.
+PATH is the file path, REASON is a short string explaining the conflict."
+  (format "#+begin_context\n%s\n#+end_context\n;; Conflict: %s" path reason))
+
+(defun carriage-file-ops--should-fallback-to-context-p (op error-sym plan-item)
+  "Return non-nil if file-ops error should trigger begin_context fallback.
+OP is 'create|'delete|'rename, ERROR-SYM is the error symbol."
+  (pcase op
+    ('create (memq error-sym '(OPS_E_PATH FILE_E_EXISTS SEC_E_PATH)))
+    ('delete (memq error-sym '(OPS_E_PATH FILE_E_MISSING SEC_E_PATH)))
+    ('rename (memq error-sym '(OPS_E_PATH FILE_E_COLLISION FILE_E_MISSING SEC_E_PATH)))
+    (_ nil)))
+
+(defun carriage-file-ops--build-diagnostic-row (op status file details &optional context-path)
+  "Build diagnostic row with optional context suggestion.
+OP is the operation, STATUS is 'fail|'ok, FILE is the path,
+DETAILS is string, CONTEXT-PATH suggests begin_context if non-nil."
+  (let ((row (list :op op :status status :file file :details details)))
+    (when context-path
+      (setq row (plist-put row :_suggest-context context-path)))
+    row))
 
 ;;;; Registration
 

@@ -94,114 +94,133 @@ CTX MAY carry:
 - Suite=sre or Suite=aibo:
   • Use ONLY SRE/AIBO-style patch blocks (no unified diff).
   • For each file, express changes as one or more begin_from/begin_to literal pairs inside the body.
-  • NEVER use :from/:to header keys for SRE/AIBO (they are allowed ONLY for :op rename; for all other ops they are forbidden).\n")
+  • NEVER use :from/:to header keys for SRE/AIBO (they are allowed ONLY for :op rename; for all other ops they are forbidden).
+  • HEADER FORMAT (CRITICAL): #+begin_patch (:op \"aibo\" :version \"1\" :file \"path.el\")
+  • Header MUST be a single-line S-expression in parentheses on the #+begin_patch line.
+  • WRONG (INVALID — REJECT):\n    #+begin_patch\n    :op \"aibo\"\n    :version \"1\"\n    :file \"path.el\"\n    #+end_patch"
+             • FORMAT CHECK (step 0): If header params are on separate lines -> INVALID, regenerate.\n")
             ('udiff
              "Suite/Syntax:
-- Suite=udiff:
-  • Use ONLY unified diff blocks (:op \"patch\") with ---/+++/@@ hunks.
-  • Do NOT emit AIBO/SRE begin_from/begin_to pairs in this mode.\n")
+             - Suite=udiff:
+             • Use ONLY unified diff blocks (:op \"patch\") with ---/+++/@@ hunks.
+             • Do NOT emit AIBO/SRE begin_from/begin_to pairs in this mode.\n")
             (_
              "Suite/Syntax:
-- Suite not specified: default to SRE/AIBO-style literal edits unless the Suite explicitly requests udiff.\n")))
+             - Suite not specified: default to SRE/AIBO-style literal edits unless the Suite explicitly requests udiff.\n")))
          (profile-note
           (pcase profile
             ('p3
              (format
               "Context profile:
-- P3-debug: extended context for debugging; limits still apply (files<=%s, bytes<=%s).\n"
-              max-files max-bytes))
-            ('p1
-             (format
-              "Context profile:
+             - P3-debug: extended context for debugging; limits still apply (files<=%s, bytes<=%s).\n"
+             max-files max-bytes))
+          ('p1
+           (format
+            "Context profile:
 - P1-core: focused minimal context (files<=%s, bytes<=%s). Prefer compact, high-signal edits.\n"
-              max-files max-bytes))
-            (_ nil)))
-         (ctx-limit-note
-          (when (or (and (integerp om) (> om 0)) lim)
-            (format
-             "Context limits:
+            max-files max-bytes))
+          (_ nil)))
+    (ctx-limit-note
+     (when (or (and (integerp om) (> om 0)) lim)
+       (format
+        "Context limits:
 - Some context items were omitted due to size limits (omitted=%s).
 - Do NOT assume you see the entire project; treat missing files as UNKNOWN, not as \"file does not exist\".\n"
-             (or om 0))))
-         (doc-scope-note
-          (pcase doc-scope
-            ('last
-             "Doc-context scope:
+        (or om 0))))
+    (doc-scope-note
+     (pcase doc-scope
+       ('last
+        "Doc-context scope:
 - ONLY the last #+begin_context block in this document is used as the file-path list for the NEXT iteration.
 - When you update that block, you MUST keep a FULL list of required paths (not just new additions).\n")
-            ('all
-             "Doc-context scope:
+       ('all
+        "Doc-context scope:
 - ALL #+begin_context blocks in this document contribute paths for the NEXT iteration.\n")
-            (_ nil))))
-    (concat
-     "Output contract (two legal outputs only):\n"
-     "A) Org-compatible patch blocks only (format depends on Suite).\n"
-     "B) If required file text is missing for EDIT, output ONLY one begin_context block with paths.\n"
-     "C) If user asks to CREATE a new file (path NOT in begin_map) -> output #+begin_patch :op create directly.\n"
-     "\n"
-     "Do NOT include prose outside blocks. No reasoning, no commentary.\n"
-     "- Use exactly one patch block per operation.\n"
-     "- Paths must be RELATIVE to project root; no absolute paths, no \"..\" segments.\n"
-     "- begin_map/begin_state_manifest describe existence, not editable text by themselves.\n"
-     "- begin_context is NOT a wishlist: list ONLY existing files whose text you need to read.\n"
-     "- NEVER list files you intend to create in begin_context.\n"
-     "\n"
-     "DECISION TREE (CRITICAL):\n"
-     "1) User asks CREATE + path NOT in begin_map -> :op create immediately (NO begin_context).\n"
-     "2) User asks EDIT + path in begin_map exists=true + text visible -> patch/sre/aibo.\n"
-     "3) User asks EDIT + path in begin_map exists=true + text NOT visible -> ONLY begin_context.\n"
-     "4) User asks EDIT + path NOT in begin_map -> clarify or assume create if explicit.\n"
-     "\n"
-     "OPERATION ORDER (multiple ops):\n"
-     "delete -> rename -> create -> patch -> sre/aibo\n"     "\n"
-     suite-note
-     (or profile-note "")
-     (or ctx-limit-note "")
-     (or doc-scope-note "")
-     "\n"
-     "HARD CONTEXT VISIBILITY RULES:\n"
-     "\n"
-     "- Sections formatted as `In file <path>:` followed by the file body mean that the CURRENT TEXT of that exact file is present in this request.\n"
-     "- The full body inside such an `In file <path>:` section is the AUTHORITATIVE CURRENT FILE TEXT for that exact path in this request.\n"
-     "- That body MUST be treated as VISIBLE CONTEXT and as has_text=true for this path in this request, regardless of what begin_state_manifest says.\n"
-     "- If the current request visibly contains `In file <path>:` with a real file body, you already see that file's text in context right now.\n"
-     "- the request may provide the matching current file body under `In file <path>:`.\n"
-     "- that file already has current text available in this request and must be treated as has_text=true.\n"
-     "- If this request contains an `In file <path>:` section with the file body for a path, you MUST treat that file text as visible/present.\n"
-     "- CRITICAL: If this request contains an `In file <path>:` section with a file body for some path, you ALREADY SEE the current text of that file and MUST NOT claim that it is missing or invisible.\n"
-     "- Do NOT say that file text is absent, unavailable or unseen for any path that has an `In file <path>:` section with a real body in this SAME request.\n"
-     "- Do NOT claim that file text is missing when this request already contains an `In file <path>:` section with the file body.\n"
-     "- NEVER ask for begin_context for a path whose full current body is already present in an `In file <path>:` section in this request.\n"
-     "- Do NOT ask for begin_context for a path whose full current body is already present.\n"
-     "- Seeing an `In file <path>:` section with a body means the file text is already present in context for that exact path; treat this as has_text=true for this request.\n"
-     "- An `In file <path>:` body is the ACTUAL current contents of that file in this request, not a hint or summary.\n"
-     "- you already have the required current text and must proceed from that body instead of claiming missing context.\n"
-     "- If you can see an `In file <path>:` section with the body for a path, you MUST proceed from that body as current text and MUST NOT guess or say \"I do not see the file\".\n"
-     "- In all such cases, CURRENT TEXT of that file is present in this request and must be used as the basis for edits.\n"
-     "- Never say \"I do not see the file text\" or equivalent when an `In file <path>:` section with the body is present.\n"
-     "\n"
-     "EDITABILITY / SAFETY RULES:\n"
-     "\n"
-     "- When you request begin_context for some path, it ALWAYS means there is no current file body for it in this request.\n"
-     "- Conversely, when a file body is present in such an `In file <path>:` section, treat that file as having current text available.\n"
-     "- In presence of an `In file <path>:` body, that body OVERRIDES any uncertainty from begin_state_manifest, even if begin_state_manifest was omitted, stale, or says has_text=false.\n"
-     "\n"
-     "- Edit a file ONLY if its current text is present in this request:\n"
-     "  • either begin_state_manifest says exists=true AND has_text=true for that path, or\n"
-     "  • there is an `In file <path>:` section with the file body for that path in this request.\n"
-     "- Delete/rename state-sensitive operations also require exists=true in begin_state_manifest (or equivalent state evidence).\n"
-     "- If the target file's CURRENT TEXT is not present in this request context (no matching `In file <path>:` body and no has_text=true in begin_state_manifest), do NOT output patches for it; output ONLY one begin_context block listing required paths.\n"
-     "- If a path is present in begin_map, or begin_state_manifest says exists=true, it MUST be treated as an existing file (so :op create is forbidden for it). Use patch/sre/aibo/rename/delete instead of create.\n"
-     "- If a needed file exists but its text is missing, begin_context is the ONLY legal output; do not guess patches.\n"
-     "\n"
-     "SRE/AIBO HEADER RULE:\n"
-     "\n"
-     "- For SRE/AIBO edits (Suite=sre or Suite=aibo), express changes ONLY as one or more begin_from/begin_to literal pairs inside the patch body.\n"
-     "- NEVER use :from/:to header keys for SRE/AIBO (they are allowed ONLY for :op rename; for all other ops they are forbidden).\n"
-     "\n"
-     "If you cannot anchor a change to current file text, request context instead of guessing.\n"
-     "\n"
-     "Allowed operations depend on Suite; obey the Suite-specific rules above and do not mix incompatible formats in one answer.\n")))
+       (_ nil))))
+  (concat
+   "OUTPUT CONTRACT (TWO LEGAL OUTPUTS ONLY):\n"
+   "A) Org-compatible patch blocks only (format depends on Suite).\n"
+   "B) If required file text is missing for EDIT, output ONLY one begin_context block with paths.\n"
+   "C) If user asks to CREATE a new file (path NOT in begin_map) -> output #+begin_patch :op create IMMEDIATELY.\n"
+   "\n"
+   "Do NOT include prose outside blocks. No reasoning, no commentary.\n"
+   "- Use exactly one patch block per operation.\n"
+   "- Paths must be RELATIVE to project root; no absolute paths, no \"..\" segments.\n"
+   "- begin_map/begin_state_manifest describe existence, not editable text by themselves.\n"
+   "- begin_context is NOT a wishlist: list ONLY existing files whose text you need to read.\n"
+   "- NEVER list files you intend to create in begin_context (that's the #1 mistake).\n"
+   "\n"
+   "DECISION TREE (CRITICAL — READ FIRST):\n"
+   "1) CREATE new file (user explicitly asks + path NOT in begin_map):\n"
+   "   - ABSOLUTE: :op create IMMEDIATELY. NEVER request begin_context for files to create.\n"
+   "   - Hard rule: absence in begin_map + explicit create = MUST create.\n"
+   "2) EDIT existing file (path in begin_map exists=true):\n"
+   "   - If text visible (In file <path>: with body) -> patch/sre/aibo immediately.\n"
+   "   - If text NOT visible -> ONLY begin_context (list only existing files).\n"
+   "   - NEVER use :op create for files that exist in begin_map.\n"
+   "3) begin_context is NOT a wishlist (CRITICAL):\n"
+   "   - MUST list ONLY files that ALREADY exist and whose text you need to read.\n"
+   "   - NEVER list files you intend to create (that's the #1 mistake).\n"
+   "   - One begin_context block per iteration; full list of required paths.\n"
+   "4) User asks EDIT + path NOT in begin_map -> clarify or assume create if explicit.\n"
+   "\n"
+   "OPERATION ORDER (multiple ops):\n"
+   "delete -> rename -> create -> patch -> sre/aibo\n"
+   "\n"
+   "DELETE+CREATE STRATEGY:\n"
+   "- For complex edits (>50% of file content), prefer :op delete + :op create over :op aibo/patch.\n"
+   "- Delete+create is cleaner than heavily fragmented patches.\n"
+   "- Model should NOT replace entire file content with a single code block.\n"
+   "- Use explicit :op delete followed by :op create for full file replacements.\n"
+   "\n"
+   suite-note
+   (or profile-note "")
+   (or ctx-limit-note "")
+   (or doc-scope-note "")
+   "\n"
+   "HARD CONTEXT VISIBILITY RULES:\n"
+   "\n"
+   "- Sections formatted as `In file <path>:` followed by the file body mean that the CURRENT TEXT of that exact file is present in this request.\n"
+   "- The full body inside such an `In file <path>:` section is the AUTHORITATIVE CURRENT FILE TEXT for that exact path in this request.\n"
+   "- That body MUST be treated as VISIBLE CONTEXT and as has_text=true for this path in this request, regardless of what begin_state_manifest says.\n"
+   "- If the current request visibly contains `In file <path>:` with a real file body, you already see that file's text in context right now.\n"
+   "- the request may provide the matching current file body under `In file <path>:`.\n"
+   "- that file already has current text available in this request and must be treated as has_text=true.\n"
+   "- If this request contains an `In file <path>:` section with the file body for a path, you MUST treat that file text as visible/present.\n"
+   "- CRITICAL: If this request contains an `In file <path>:` section with a file body for some path, you ALREADY SEE the current text of that file and MUST NOT claim that it is missing or invisible.\n"
+   "- Do NOT say that file text is absent, unavailable or unseen for any path that has an `In file <path>:` section with a real body in this SAME request.\n"
+   "- Do NOT claim that file text is missing when this request already contains an `In file <path>:` section with the file body.\n"
+   "- NEVER ask for begin_context for a path whose full current body is already present in an `In file <path>:` section in this request.\n"
+   "- Do NOT ask for begin_context for a path whose full current body is already present.\n"
+   "- Seeing an `In file <path>:` section with a body means the file text is already present in context for that exact path; treat this as has_text=true for this request.\n"
+   "- An `In file <path>:` body is the ACTUAL current contents of that file in this request, not a hint or summary.\n"
+   "- you already have the required current text and must proceed from that body instead of claiming missing context.\n"
+   "- If you can see an `In file <path>:` section with the body for a path, you MUST proceed from that body as current text and MUST NOT guess or say \"I do not see the file\".\n"
+   "- In all such cases, CURRENT TEXT of that file is present in this request and must be used as the basis for edits.\n"
+   "- Never say \"I do not see the file text\" or equivalent when an `In file <path>:` section with the body is present.\n"
+   "\n"
+   "EDITABILITY / SAFETY RULES:\n"
+   "\n"
+   "- When you request begin_context for some path, it ALWAYS means there is no current file body for it in this request.\n"
+   "- Conversely, when a file body is present in such an `In file <path>:` section, treat that file as having current text available.\n"
+   "- In presence of an `In file <path>:` body, that body OVERRIDES any uncertainty from begin_state_manifest, even if begin_state_manifest was omitted, stale, or says has_text=false.\n"
+   "\n"
+   "- Edit a file ONLY if its current text is present in this request:\n"
+   "  • either begin_state_manifest says exists=true AND has_text=true for that path, or\n"
+   "  • there is an `In file <path>:` section with the file body for that path in this request.\n"
+   "- Delete/rename state-sensitive operations also require exists=true in begin_state_manifest (or equivalent state evidence).\n"
+   "- If the target file's CURRENT TEXT is not present in this request context (no matching `In file <path>:` body and no has_text=true in begin_state_manifest), do NOT output patches for it; output ONLY one begin_context block listing required paths.\n"
+   "- If a path is present in begin_map, or begin_state_manifest says exists=true, it MUST be treated as an existing file (so :op create is forbidden for it). Use patch/sre/aibo/rename/delete instead of create.\n"
+   "- If a needed file exists but its text is missing, begin_context is the ONLY legal output; do not guess patches.\n"
+   "\n"
+   "SRE/AIBO HEADER RULE:\n"
+   "\n"
+   "- For SRE/AIBO edits (Suite=sre or Suite=aibo), express changes ONLY as one or more begin_from/begin_to literal pairs inside the patch body.\n"
+   "- NEVER use :from/:to header keys for SRE/AIBO (they are allowed ONLY for :op rename; for all other ops they are forbidden).\n"
+   "\n"
+   "If you cannot anchor a change to current file text, request context instead of guessing.\n"
+   "\n"
+   "Allowed operations depend on Suite; obey the Suite-specific rules above and do not mix incompatible formats in one answer.\n"))
 
 
 (defun carriage--intent-frag-org-formatting (_ctx)

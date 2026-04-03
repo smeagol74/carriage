@@ -19,6 +19,20 @@
 ;; Registry mapping (op . version) to parser/dry-run/apply handlers and prompt
 ;; fragments. Central lookup for op implementations.
 ;;
+;; PATCH HEADER FORMAT (CRITICAL — STEP 0):
+;; - All ops MUST use single-line S-expression header in parentheses.
+;; - CORRECT: #+begin_patch (:op "create" :version "1" :file "path.el")
+;; - Header MUST be on the #+begin_patch line (no params on separate lines).
+;; - WRONG (INVALID — REJECT AND REGENERATE):
+;;     #+begin_patch
+;;     :op "create"
+;;     :version "1"
+;;     :file "path.el"
+;;     #+end_patch
+;; - FORMAT CHECK (step 0): If header params are on separate lines -> INVALID.
+;; - STRATEGY NOTE: For complex edits (>50% of file content), prefer :op delete + :op create.
+;; - Delete+create is cleaner than heavily fragmented patches.
+;;
 ;;; Code:
 ;; Specifications:
 ;;   spec/code-style-v2.org
@@ -51,7 +65,19 @@ Shape: ((KEY . PLIST) ...) where:
 
 (defun carriage-format-register (op version &rest kvs)
   "Register OP VERSION handlers: :parse, :dry-run, :apply, :prompt-fragment.
-Returns an unregister zero-arg lambda."
+Returns an unregister zero-arg lambda.
+
+PATCH HEADER FORMAT (CRITICAL — STEP 0):
+- MUST use single-line S-expression in parentheses on #+begin_patch line.
+- CORRECT: #+begin_patch (:op \"aibo\" :version \"1\" :file \"path.el\")
+- WRONG (INVALID — REJECT):
+    #+begin_patch
+    :op \"aibo\"
+    :version \"1\"
+    :file \"path.el\"
+    #+end_patch
+- NEVER put :op/:version/:file on separate lines after #+begin_patch.
+- FORMAT CHECK (step 0): If header params span multiple lines -> INVALID."
   (let* ((key (carriage-format--key op version))
          (entry (list :parse            (plist-get kvs :parse)
                       :dry-run          (plist-get kvs :dry-run)

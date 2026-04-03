@@ -1828,6 +1828,12 @@ Keys:
 (defun carriage-transport-gptel--dispatch--call-gptel (prompt system buffer cb)
   "Call `gptel-request' with PROMPT/SYSTEM, writing into BUFFER, using callback CB."
   (carriage-transport-gptel--dispatch--log-request-map-presence prompt system)
+  (carriage-log
+   "Transport[gptel] REQUEST-PAYLOAD prompt-has-map=%s system-has-map=%s prompt-head=%s system-head=%s"
+   (if (and (stringp prompt) (string-match-p "#\\+begin_map\\b" prompt)) "t" "nil")
+   (if (and (stringp system) (string-match-p "#\\+begin_map\\b" system)) "t" "nil")
+   (carriage-transport-gptel--snip (and (stringp prompt) (substring prompt 0 (min 300 (length prompt)))) 320)
+   (carriage-transport-gptel--snip (and (stringp system) (substring system 0 (min 300 (length system)))) 320))
   (gptel-request
       prompt
     :callback cb

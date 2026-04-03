@@ -112,6 +112,21 @@ LLM Security
 - Logging: redact secrets; cap retention; avoid echoing full payloads in errors.
 
 
+Output Mode Contract
+- Anchor: MODE
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- MODE-aibo-001: Three modes supported:
+  - code: ONLY #+begin_patch blocks, no prose outside (for automated apply)
+  - plain: Org prose only, no patch blocks (for analysis/discussion)
+  - hybrid: Prose + patch blocks (default for most tasks)
+- MODE-aibo-002: Mode is inferred from user intent:
+  - "Implement", "Fix", "Apply", "Реализуй", "Вноси правки" → code or hybrid
+  - "Analyze", "Review", "Explain", "Проанализируй", "Диалектический анализ" → plain
+  - Unclear → hybrid (safe default)
+- MODE-aibo-003: Explicit override via ;; mode: code|plain|hybrid comment in request
+
 Prompt Guidance (LLM Output Contract)
 - Anchor: PRM
 - Normative: t
@@ -122,6 +137,31 @@ Prompt Guidance (LLM Output Contract)
 - Forbidden-Phrases: "--- a/", "+++ b/", "diff --git"; any :match key; any `:from` or `:to` header key in an AIBO block.
 - Positive Example: two pairs, :occur all with :expect 2, literal-only replacements, no :match key.
 - Negative Example: presence of :match regex; or :occur all without :expect; no-op patch (TO identical to FROM).
+
+Conflict Resolution
+- Anchor: CONF
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- CONF-aibo-001: If patch fails to apply (text changed between iterations):
+  1. Output #+begin_context with the affected path
+  2. Add brief description: "Text mismatch — need current version"
+  3. Do NOT retry with modified :from (that masks the real issue)
+  4. Helper: carriage-aibo--conflict-context-payload(path, reason)
+- CONF-aibo-002: If :op create forbidden (path in begin_map with exists=true):
+  1. Switch to :op sre or :op aibo for edits
+  2. Or :op patch for unified diff changes
+  3. Never force create on existing file
+  4. Helper: carriage-file-ops--should-fallback-to-context-p('create, error-sym, item)
+- CONF-aibo-003: If :expect mismatch (occur all found N != expected K):
+  1. Output current match count in diagnostic
+  2. Request begin_context to verify actual state
+  3. Adjust :expect only after seeing current text
+  4. Helper: carriage-aibo--should-fallback-to-context-p(error-sym, item)
+- CONF-aibo-004: If SRE_E_REGEX_SYNTAX or SRE_E_OCCUR_EXPECT:
+  1. Fall back to begin_context for text verification
+  2. Do NOT guess replacement without current text
+  3. Helper: carriage-aibo--should-fallback-to-context-p(error-sym, item)
 
 Testing and Conformance
 - Anchor: TST

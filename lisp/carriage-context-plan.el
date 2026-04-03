@@ -34,7 +34,7 @@
   :group 'carriage
   :prefix "carriage-context-plan-")
 
-(defcustom carriage-context-plan-max-files 500
+(defcustom carriage-context-plan-max-files 250
   "Maximum number of files to write into the materialized begin_context block."
   :type 'integer
   :group 'carriage-context-plan)
@@ -283,24 +283,24 @@ Return plist: (:files list :matched int :excluded int :warnings list)."
          (excluded 0))
     (cl-labels
         ((add-file
-          (rel)
-          (when (and (stringp rel) (not (string-empty-p rel)))
-            (unless (gethash rel seen)
-              (puthash rel t seen)
-              (setq matched (1+ matched)))))
+           (rel)
+           (when (and (stringp rel) (not (string-empty-p rel)))
+             (unless (gethash rel seen)
+               (puthash rel t seen)
+               (setq matched (1+ matched)))))
          (warn
-          (msg) (when (stringp msg) (push msg warnings)))
+           (msg) (when (stringp msg) (push msg warnings)))
          (select-by-glob
-          (glob files)
-          (let* ((re (carriage-context-plan--glob->regexp glob))
-                 (acc '()))
-            (dolist (p files (nreverse acc))
-              (when (string-match-p re p) (push p acc)))))
+           (glob files)
+           (let* ((re (carriage-context-plan--glob->regexp glob))
+                  (acc '()))
+             (dolist (p files (nreverse acc))
+               (when (string-match-p re p) (push p acc)))))
          (rule-no-match
-          (d)
-          (warn (format "CTXPLAN_W_NO_MATCH: %s %s"
-                        (upcase (symbol-name (plist-get d :type)))
-                        (string-trim (or (plist-get d :arg) ""))))))
+           (d)
+           (warn (format "CTXPLAN_W_NO_MATCH: %s %s"
+                         (upcase (symbol-name (plist-get d :type)))
+                         (string-trim (or (plist-get d :arg) ""))))))
       (dolist (d directives)
         (pcase (plist-get d :type)
           ('glob

@@ -200,34 +200,39 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
 (defun carriage-op-aibo-prompt-fragment (_ctx)
   "Фрагмент промпта для :op aibo (literal-only, reliable for weak/strong models)."
   (concat
-   "AIBO PATCH FORMAT — STRICT, LITERAL-ONLY (ONE FILE)\n"
-   "====================================================\n"
-   "\n"
    "DECISION TREE (READ FIRST — TOP 40 LINES):\n"
-   "1) CREATE new file (user explicitly asks):\n"
-   "   - If path is NOT in begin_map -> use :op create immediately.\n"
-   "   - Do NOT request begin_context for files you intend to create.\n"
-   "   - Soft rule: absence in begin_map + explicit create request = allow create.\n"
-   "   - If path IS in begin_map with exists=true -> create forbidden; use patch/sre/aibo.\n"
+   "1) CREATE new file (user explicitly asks + path NOT in begin_map):\n"
+   "   - ABSOLUTE: If path is NOT in begin_map -> use :op create immediately.\n"
+   "   - NEVER request begin_context for files you intend to create.\n"
+   "   - Hard rule: absence in begin_map + explicit create request = MUST create.\n"
+   "   - If path IS in begin_map with exists=true -> create FORBIDDEN; use patch/sre/aibo.\n"
    "\n"
    "2) EDIT existing file (path in begin_map with exists=true):\n"
    "   - If text visible (In file <path>: with body) -> output patch block directly.\n"
    "   - If text NOT visible -> output ONLY #+begin_context with that path.\n"
-   "   - NEVER use :op create for existing files.\n"
+   "   - NEVER use :op create for existing files (path in begin_map).\n"
    "\n"
-   "3) begin_context is NOT a wishlist:\n"
-   "   - MUST list only files that already exist and whose text you need to read.\n"
-   "   - NEVER list files you intend to create.\n"
+   "3) begin_context is NOT a wishlist (CRITICAL):\n"
+   "   - MUST list ONLY files that ALREADY exist and whose text you need to read.\n"
+   "   - NEVER list files you intend to create (that's the #1 mistake).\n"
    "   - One begin_context block per iteration; full list of required paths.\n"
    "\n"
+   "HARD CONTEXT VISIBILITY RULES:\n"
+   "- `In file <path>:` with body = CURRENT TEXT present; treat as has_text=true.\n"
+   "- If `In file <path>:` body is present, do NOT claim text is missing.\n"
+   "- NEVER ask begin_context for paths with visible `In file <path>:` body.\n"
+   "- begin_context is ONLY for existing files whose text is NOT visible.\n"
+   "\n"
+   "OPERATION ORDER (multiple ops):\n"
+   "delete -> rename -> create -> patch -> sre/aibo\n"
+   "========================================\n"
+   "AIBO PATCH FORMAT — STRICT, LITERAL-ONLY\n"
+   "========================================\n"
    "OUTPUT FORMAT (EXACT — COPY THIS STRUCTURE):\n"
    "1) First line MUST be history marker:\n"
    "   ;; patch history: RELATIVE/PATH — Short description\n"
-   "   or: ;; patch history: RELATIVE/PATH — (no description)\n"
-   "\n"
    "2) Then ONE #+begin_patch block with EXACT structure:\n"
    "   #+begin_patch (:version \"1\" :op \"aibo\" :file \"RELATIVE/PATH\")\n"
-   "   #+pair (:occur all :expect K) ; optional, applies to NEXT pair only\n"
    "   #+begin_from\n"
    "   EXACT source text to match (literal, no regex)\n"
    "   #+end_from\n"
@@ -235,7 +240,6 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
    "   EXACT replacement text (may be empty for deletion)\n"
    "   #+end_to\n"
    "   #+end_patch\n"
-   "\n"
    "CRITICAL RULES (NON-NEGOTIABLE):\n"
    "- :match is FORBIDDEN (aibo is literal-only, no regex).\n"
    "- :occur must be 'first or 'all; if 'all, :expect is REQUIRED (integer >= 0).\n"
@@ -245,7 +249,6 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
    "- Do NOT start with '*' or '**' (no Org heading before patch).\n"
    "- Do NOT emit no-op patches (FROM == TO).\n"
    "- If no changes needed -> output NOTHING (no patch block).\n"
-   "\n"
    "SELF-CHECK BEFORE OUTPUT (6 items):\n"
    "[] op is exactly \"aibo\" (not \"patch\", \"sre\", \"create\")\n"
    "[] :version is \"1\" (string, not integer)\n"
@@ -253,7 +256,6 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
    "[] begin_from/begin_to blocks used (not :from/:to header keys)\n"
    "[] no :match key anywhere (literal-only format)\n"
    "[] if :occur all -> :expect present and >= 0\n"
-   "\n"
    "COMMON MISTAKES (AVOID THESE):\n"
    "- Missing parentheses in #+begin_patch header\n"
    "- Using :from/:to in header instead of begin_from/begin_to blocks\n"
@@ -262,13 +264,14 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
    "- Requesting begin_context for files you intend to create\n"
    "- Using :op create for files that exist in begin_map\n"
    "- Putting multiple operations in one patch block (one block per op)\n"
-   "\n"
+   "========================================\n"
+   "FORMAT EXAMPLES (END OF PROMPT)\n"
+   "========================================\n"
    "EXAMPLE 1 — CREATE (new file, path NOT in begin_map):\n"
    ";; patch history: config/vite.config.js — (no description)\n"
    "#+begin_patch (:version \"1\" :op \"create\" :file \"config/vite.config.js\")\n"
    "export default { root: '.' }\n"
    "#+end_patch\n"
-   "\n"
    "EXAMPLE 2 — AIBO EDIT (existing file, text visible):\n"
    ";; patch history: lisp/example.el — Fix typo in docstring\n"
    "#+begin_patch (:version \"1\" :op \"aibo\" :file \"lisp/example.el\")\n"
@@ -281,17 +284,38 @@ PAIRS — список пар вида ((:from . STR) (:to . STR) (:opts . PLIST
    "  \"New docstring.\")\n"
    "#+end_to\n"
    "#+end_patch\n"
-   "\n"
    "EXAMPLE 3 — CONTEXT REQUEST (existing file, text NOT visible):\n"
    "#+begin_context\n"
    "lisp/example.el\n"
-   "#+end_context\n"
-   "\n"
-   "OPERATION ORDER (if multiple ops in one response):\n"
-   "delete -> rename -> create -> patch -> sre/aibo\n"))
+   "#+end_context\n"))
 
 
-;;; Registration
+;;;; Conflict Resolution Helpers
+
+(defun carriage-aibo--conflict-context-payload (path reason)
+  "Build begin_context payload for AIBO conflict resolution.
+PATH is the file path, REASON is a short string explaining the conflict."
+  (format "#+begin_context\n%s\n#+end_context\n;; Conflict: %s" path reason))
+
+(defun carriage-aibo--should-fallback-to-context-p (error-sym plan-item)
+  "Return non-nil if AIBO error should trigger begin_context fallback.
+ERROR-SYM is the error symbol, PLAN-ITEM is the failed plan item."
+  (memq error-sym
+        '(SRE_E_REGEX_SYNTAX
+          SRE_E_OCCUR_EXPECT
+          SRE_E_SEGMENTS_COUNT
+          SRE_E_UNPAIRED)))
+
+(defun carriage-aibo--build-diagnostic-row (status file matches details &optional context-path)
+  "Build diagnostic row with optional context suggestion.
+STATUS is 'fail|'skip|'ok, FILE is the path, MATCHES is count,
+DETAILS is string, CONTEXT-PATH suggests begin_context if non-nil."
+  (let ((row (list :op 'aibo :status status :file file :matches matches :details details)))
+    (when context-path
+      (setq row (plist-put row :_suggest-context context-path)))
+    row))
+
+;;;; Registration
 
 (carriage-format-register 'aibo "1"
                           :parse   #'carriage-parse-aibo

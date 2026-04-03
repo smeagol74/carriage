@@ -58,20 +58,20 @@
    "====================================================\n"
    "\n"
    "DECISION TREE (READ FIRST — TOP 40 LINES):\n"
-   "1) CREATE new file (user explicitly asks):\n"
-   "   - If path is NOT in begin_map -> use :op create immediately.\n"
-   "   - Do NOT request begin_context for files you intend to create.\n"
-   "   - Soft rule: absence in begin_map + explicit create request = allow create.\n"
-   "   - If path IS in begin_map with exists=true -> create forbidden; use patch/sre.\n"
+   "1) CREATE new file (user explicitly asks + path NOT in begin_map):\n"
+   "   - ABSOLUTE: If path is NOT in begin_map -> use :op create immediately.\n"
+   "   - NEVER request begin_context for files you intend to create.\n"
+   "   - Hard rule: absence in begin_map + explicit create request = MUST create.\n"
+   "   - If path IS in begin_map with exists=true -> create FORBIDDEN; use patch/sre/aibo.\n"
    "\n"
    "2) EDIT existing file (path in begin_map with exists=true):\n"
    "   - If text visible (In file <path>: with body) -> output patch block directly.\n"
    "   - If text NOT visible -> output ONLY #+begin_context with that path.\n"
-   "   - NEVER use :op create for existing files.\n"
+   "   - NEVER use :op create for existing files (path in begin_map).\n"
    "\n"
-   "3) begin_context is NOT a wishlist:\n"
-   "   - MUST list only files that already exist and whose text you need to read.\n"
-   "   - NEVER list files you intend to create.\n"
+   "3) begin_context is NOT a wishlist (CRITICAL):\n"
+   "   - MUST list ONLY files that ALREADY exist and whose text you need to read.\n"
+   "   - NEVER list files you intend to create (that's the #1 mistake).\n"
    "   - One begin_context block per iteration; full list of required paths.\n"
    "\n"
    "OUTPUT FORMAT (EXACT — COPY THIS STRUCTURE):\n"
@@ -714,6 +714,44 @@ Implements NOOP→'skip when after==before and reports :matches and :changed-byt
           (list :op 'sre :status 'ok :file file
                 :matches matches :changed-bytes changed-bytes
                 :details (format "Applied %d replacements" matches)))))))
+
+;;;; Conflict Resolution Helpers
+
+(defun carriage-sre--conflict-context-payload (path reason)
+  "Build begin_context payload for SRE conflict resolution.
+PATH is the file path, REASON is a short string explaining the conflict."
+  (format "#+begin_context\n%s\n#+end_context\n;; Conflict: %s" path reason))
+
+(defun carriage-sre--should-fallback-to-context-p (error-sym plan-item)
+  "Return non-nil if SRE error should trigger begin_context fallback.
+ERROR-SYM is the error symbol, PLAN-ITEM is the failed plan item."
+  (memq error-sym
+        '(SRE_E_REGEX_SYNTAX
+          SRE_E_OCCUR_EXPECT
+          SRE_E_OCCUR_VALUE
+          SRE_E_SEGMENTS_COUNT
+          SRE_E_UNPAIRED
+          SRE_E_LIMITS)))
+
+(defun carriage-sre--build-diagnostic-row (status file matches details &optional context-path)
+  "Build diagnostic row with optional context suggestion.
+STATUS is 'fail|'skip|'ok, FILE is the path, MATCHES is count,
+DETAILS is string, CONTEXT-PATH suggests begin_context if non-nil."
+  (let ((row (list :op 'sre :status status :file file :matches matches :details details)))
+    (when context-path
+      (setq row (plist-put row :_suggest-context context-path)))
+    row))
+
+(defun carriage-sre--get-conflict-reason (error-sym)
+  "Return human-readable conflict reason for ERROR-SYM."
+  (pcase error-sym
+    ('SRE_E_REGEX_SYNTAX "Regex syntax error — fallback to literal or request context")
+    ('SRE_E_OCCUR_EXPECT "Match count mismatch — verify actual occurrences")
+    ('SRE_E_OCCUR_VALUE "Invalid :occur value — must be 'first or 'all")
+    ('SRE_E_SEGMENTS_COUNT "No valid FROM/TO pairs found")
+    ('SRE_E_UNPAIRED "Unpaired begin_from without begin_to")
+    ('SRE_E_LIMITS "Payload exceeds size limits")
+    (_ "Unknown conflict")))
 
 ;;;; Registration
 

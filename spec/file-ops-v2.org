@@ -127,6 +127,21 @@ Performance and Asynchrony
 - LLM-Summary: Non-blocking FS ops; async-capable; report elapsed ms; engine index policy optional.
 - FS ops SHOULD be async-capable; report :elapsed-ms; stage-policy 'index MAY apply via engines.
 
+Output Mode Contract
+- Anchor: MODE
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- MODE-fops-001: Three modes supported:
+  - code: ONLY #+begin_patch blocks, no prose outside (for automated apply)
+  - plain: Org prose only, no patch blocks (for analysis/discussion)
+  - hybrid: Prose + patch blocks (default for most tasks)
+- MODE-fops-002: Mode is inferred from user intent:
+  - "Create", "Delete", "Rename", "Создай", "Удали", "Переименуй" → code or hybrid
+  - "Analyze", "Review", "Explain", "Проанализируй", "Диалектический анализ" → plain
+  - Unclear → hybrid (safe default)
+- MODE-fops-003: Explicit override via ;; mode: code|plain|hybrid comment in request
+
 Prompt Guidance (LLM Output Contract)
 - Anchor: PRM
 - Normative: t
@@ -136,6 +151,32 @@ Prompt Guidance (LLM Output Contract)
 - Forbidden-Phrases: unified diff headers; SRE begin_from/begin_to segments.
 - Positive Example: create — #+begin_patch (:version "1" :op "create" :file "dir/x.txt") … #+end_patch.
 - Negative Example: delete/rename with non-empty body; rename using :file instead of :from/:to; create for a path already present in `#+begin_map` or current state manifest.
+
+Conflict Resolution
+- Anchor: CONF
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- CONF-fops-001: If :op create forbidden (path in begin_map with exists=true):
+  1. Check if file needs modification → use :op sre/aibo/patch instead
+  2. Check if file should be replaced → delete first, then create (two ops)
+  3. Never force create on existing file
+  4. Helper: carriage-file-ops--should-fallback-to-context-p('create, error-sym, item)
+- CONF-fops-002: If :op delete fails (file not found):
+  1. Verify path in begin_state_manifest
+  2. Output begin_context to confirm current state
+  3. Do NOT retry delete on non-existent file
+  4. Helper: carriage-file-ops--should-fallback-to-context-p('delete, error-sym, item)
+- CONF-fops-003: If :op rename collision (target exists):
+  1. Check overwrite policy (user must explicitly allow)
+  2. Or choose alternative target path
+  3. Never silently overwrite existing file
+  4. Helper: carriage-file-ops--should-fallback-to-context-p('rename, error-sym, item)
+- CONF-fops-004: Batch operation order (when multiple ops in one response):
+  1. delete operations first (free up paths)
+  2. rename operations second (move files)
+  3. create operations third (new files)
+  4. patch/sre/aibo operations last (modify content)
 
 Testing and Conformance
 - Anchor: TST

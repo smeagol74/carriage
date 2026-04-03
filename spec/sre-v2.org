@@ -123,6 +123,21 @@ Performance and Asynchrony
 - LLM-Summary: Do not block on large payloads; chunk processing; preserve metrics and counts.
 - Large payloads processed without blocking UI; chunk if needed.
 
+Output Mode Contract
+- Anchor: MODE
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- MODE-sre-001: Three modes supported:
+  - code: ONLY #+begin_patch blocks, no prose outside (for automated apply)
+  - plain: Org prose only, no patch blocks (for analysis/discussion)
+  - hybrid: Prose + patch blocks (default for most tasks)
+- MODE-sre-002: Mode is inferred from user intent:
+  - "Implement", "Fix", "Apply", "Реализуй", "Вноси правки" → code or hybrid
+  - "Analyze", "Review", "Explain", "Проанализируй", "Диалектический анализ" → plain
+  - Unclear → hybrid (safe default)
+- MODE-sre-003: Explicit override via ;; mode: code|plain|hybrid comment in request
+
 Prompt Guidance (LLM Output Contract)
 - Anchor: PRM
 - Normative: t
@@ -143,6 +158,28 @@ Prompt Guidance (LLM Output Contract)
 - Forbidden-Phrases: unified diff markers ("--- ", "+++ ", "diff --git").
 - Positive Example: one FROM→TO pair with :occur first; escaped "#+end_from" inside payload.
 - Negative Example: :occur all without :expect; missing #+begin_to/# +end_to; includes udiff markers; no-op patch (TO identical to FROM).
+
+Conflict Resolution
+- Anchor: CONF
+- Normative: t
+- Stability: stable
+- Pack-Priority: P0
+- CONF-sre-001: If patch fails to apply (text changed between iterations):
+  1. Output #+begin_context with the affected path
+  2. Add brief description: "Text mismatch — need current version"
+  3. Do NOT retry with modified :from (that masks the real issue)
+- CONF-sre-002: If :op create forbidden (path in begin_map with exists=true):
+  1. Switch to :op sre or :op aibo for edits
+  2. Or :op patch for unified diff changes
+  3. Never force create on existing file
+- CONF-sre-003: If :expect mismatch (occur all found N != expected K):
+  1. Output current match count in diagnostic
+  2. Request begin_context to verify actual state
+  3. Adjust :expect only after seeing current text
+- CONF-sre-004: If regex fails (SRE_E_REGEX_SYNTAX):
+  1. Fall back to :match 'literal if possible
+  2. Or request begin_context to verify text patterns
+  3. Never use PCRE constructs: (?<=, (?<!, (?>, (?|
 
 Testing and Conformance
 - Anchor: TST
