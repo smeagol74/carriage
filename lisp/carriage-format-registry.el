@@ -16,32 +16,17 @@
 ;;   spec/parser-impl-v2.org
 ;;
 ;;; Commentary:
-;; Registry mapping (op . version) to parser/dry-run/apply handlers and prompt
-;; fragments. Central lookup for op implementations.
+;; Registry mapping (op . version) to parser/dry-run/apply handlers.
 ;;
-;; PATCH HEADER FORMAT (CRITICAL — STEP 0):
-;; - All ops MUST use single-line S-expression header in parentheses.
-;; - CORRECT: #+begin_patch (:op "create" :version "1" :file "path.el")
-;; - Header MUST be on the #+begin_patch line (no params on separate lines).
-;; - WRONG (INVALID — REJECT AND REGENERATE):
-;;     #+begin_patch
-;;     :op "create"
-;;     :version "1"
-;;     :file "path.el"
-;;     #+end_patch
-;; - FORMAT CHECK (step 0): If header params are on separate lines -> INVALID.
-;; - STRATEGY NOTE: For complex edits (>50% of file content), prefer :op delete + :op create.
-;; - Delete+create is cleaner than heavily fragmented patches.
+;; REFERENCE-ONLY FOR DEVELOPERS — does NOT contribute to LLM system prompts.
+;; LLM prompts are built EXCLUSIVELY in carriage-suite.el and carriage-intent-registry.el.
+;; Comments here are for human maintainers only.
+;;
+;; DO NOT put MUST/NEVER/CRITICAL instructions here — they do not reach the LLM.
+;; All prompt-fragments that affect LLM behavior must be in carriage-suite.el or
+;; carriage-intent-registry.el.
 ;;
 ;;; Code:
-;; Specifications:
-;;   spec/code-style-v2.org
-;;   spec/index.org
-;;   spec/errors-v2.org
-;;   spec/compliance-checklist-v2.org
-;;   spec/parser-registry-v2.org
-;;   spec/parser-impl-v2.org
-;;   spec/project-overview-v2.org
 
 (require 'cl-lib)
 (require 'subr-x)
