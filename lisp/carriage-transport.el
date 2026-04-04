@@ -457,7 +457,7 @@ PLIST keys: :backend :model :system :prompt :context (list of paths or structure
       (carriage--traffic-append origin-buffer "---- TAIL ----")
       (carriage--traffic-append origin-buffer tail))
     (carriage--traffic-append origin-buffer
-                              (format "==== END RESPONSE (bytes=%d) ====" (string-bytes (or total-text "")))))
+                              (format "==== END RESPONSE (bytes=%d) ====" (string-bytes (or total-text ""))))))
 
 
 ;;;###autoload

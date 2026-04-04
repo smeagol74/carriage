@@ -2752,8 +2752,8 @@ proceeding with incomplete context (unless `carriage-mode-confirm-truncated-cont
             (if confirmed
                 ctx-text
               (carriage-log "context: send cancelled by user (truncated context)")
-              (signal 'quit nil))))
-        (error (or ctx-text "")))))
+              (signal 'quit nil)))
+          (error (or ctx-text ""))))))
 
 (defun carriage--context-meta-from-text (ctx-text)
   "Extract meta info from formatted CTX-TEXT (see `carriage-context-format').
