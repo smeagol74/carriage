@@ -42,6 +42,7 @@
 (autoload 'carriage-ctrl-c-ctrl-c "carriage-mode" nil t)
 (autoload 'carriage-abort-current "carriage-mode" nil t)
 (autoload 'carriage-attach-file "carriage-mode" nil t)
+(autoload 'carriage-dry-send "carriage-mode" nil t)
 
 (autoload 'carriage-report-open "carriage-report" nil t)
 (autoload 'carriage-report-show-diff-at-point "carriage-report" nil t)
@@ -366,16 +367,18 @@ Bindings installed into Carriage-owned mode maps are not restored (they are owne
 
     ;; Send/apply
     (:key "RET"   :cmd carriage-send-buffer)
+    (:key "C-RET"   :cmd carriage-dry-send)
     (:key "M-RET" :cmd carriage-send-subtree)
-    (:key "d"     :cmd carriage-dry-run-at-point)
+    (:key "A"     :cmd carriage-dry-run-at-point)
+    (:key "D"     :cmd carriage-dry-send)
     (:key "a"     :cmd carriage-apply-at-point-or-region)
-    (:key "A"     :cmd carriage-apply-last-iteration)
+    (:key "!"     :cmd carriage-apply-last-iteration)
     (:key "k"     :cmd carriage-abort-current)
     (:key "r"     :cmd carriage-report-open)
 
     ;; Model / suite / intent / engine
     (:key "m" :cmd carriage-select-model)
-    (:key "S" :cmd carriage-select-suite)
+    (:key "s" :cmd carriage-select-suite)
     (:key "i" :cmd carriage-toggle-intent)
     (:key "E" :cmd carriage-select-apply-engine)
 

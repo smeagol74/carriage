@@ -70,15 +70,13 @@ The caller is responsible for FUNCALL if the result is a function."
 (defun carriage--intent-frag-code (ctx)
   "Default fragment for Intent=Code.
 CTX MAY carry: :suite, :context-meta, :profile."
-  (let* ((suite (and (listp ctx) (plist-get ctx :suite)))
-         (meta (and (listp ctx) (plist-get ctx :context-meta)))
+  (let* ((meta (and (listp ctx) (plist-get ctx :context-meta)))
          (om (and (listp meta) (plist-get meta :omitted))))
     (concat
      "OUTPUT: #+begin_patch blocks ONLY. One block = one op. No prose outside blocks.\n"
-     (pcase suite
-       ((or 'sre 'aibo) "Format: begin_from/begin_to.\n")
-       ('udiff "Format: unified diff.\n")
-       (_ ""))
+     "Allowed ops for LLM output in current mode: aibo, create, delete, rename.\n"
+     "For content edits use AIBO only: literal replacements via begin_from/begin_to nested blocks.\n"
+     "Do NOT output unified diff. Do NOT output :op \"patch\" or :op \"sre\" blocks.\n"
      (when (and (integerp om) (> om 0)) (format "Omitted: %s.\n" om)))))
 
 (defun carriage--intent-frag-org-formatting (_ctx)
@@ -126,13 +124,15 @@ CTX MAY carry: :suite, :context-meta, :profile."
    "- one begin_context block when any required file text is missing.\n"
    "Do NOT include any prose outside blocks.\n"
    "- Use exactly one block per operation.\n"
+   "- Allowed ops in current mode: aibo, create, delete, rename.\n"
    "- Paths must be RELATIVE to project root; no absolute paths, no \"..\" segments.\n"
    "- Edit a file ONLY if begin_state_manifest says exists=true and has_text=true.\n"
    "- Delete/rename state-sensitive operations also require exists=true in begin_state_manifest.\n"
    "- If the target file's CURRENT TEXT is not present in this request context, output ONLY begin_context.\n"
    "- If a path is present in begin_map, or begin_state_manifest says exists=true, it MUST be treated as an existing file (so :op create is forbidden for it).\n"
-   "- For SRE/AIBO edits, use begin_from/begin_to blocks; do NOT use :from/:to header keys (those are only for :op rename).\n"
-   "- Allowed operations depend on Suite. Do not mention formats that are not allowed by the Suite.\n"
+   "- For content edits, use AIBO only: begin_from/begin_to nested blocks.\n"
+   "- Do NOT output unified diff. Do NOT output :op \"patch\" or :op \"sre\" blocks.\n"
+   "- Do NOT use :from/:to header keys except for :op rename.\n"
    "\n"
    "After printing ALL required begin_patch blocks, decide whether further work is needed:\n"
    "- If more iterations are required, append in this exact order:\n"

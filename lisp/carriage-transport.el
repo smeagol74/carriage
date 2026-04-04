@@ -445,8 +445,8 @@ PLIST keys: :backend :model :system :prompt :context (list of paths or structure
   (let* ((head-limit (max 0 (or carriage-traffic-summary-head-bytes 0)))
          (tail-limit (max 0 (or carriage-traffic-summary-tail-bytes 0)))
          (len (length (or total-text "")))
-         (head (substring total-text 0 (min len head-limit)))
-         (tail (if (> len tail-limit) (substring total-text (- len (min len tail-limit)) len) "")))
+         (head (substring (or total-text "") 0 (min len head-limit)))
+         (tail (if (> len tail-limit) (substring (or total-text "") (- len (min len tail-limit)) len) "")))
     (carriage--traffic-append origin-buffer "==== BEGIN RESPONSE (summary) ====")
     (when (> (length head) 0)
       (carriage--traffic-append origin-buffer "---- HEAD ----")
@@ -457,7 +457,7 @@ PLIST keys: :backend :model :system :prompt :context (list of paths or structure
       (carriage--traffic-append origin-buffer "---- TAIL ----")
       (carriage--traffic-append origin-buffer tail))
     (carriage--traffic-append origin-buffer
-                              (format "==== END RESPONSE (bytes=%d) ====" (string-bytes (or total-text ""))))))
+                              (format "==== END RESPONSE (bytes=%d) ====" (string-bytes (or total-text "")))))
 
 
 ;;;###autoload

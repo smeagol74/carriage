@@ -310,6 +310,16 @@ Important:
   :type 'boolean :group 'carriage)
 (make-variable-buffer-local 'carriage-mode-confirm-apply)
 
+(defcustom carriage-mode-confirm-truncated-context t
+  "When non-nil, prompt for confirmation before sending request with truncated context.
+
+If context exceeds limits (max-files or max-total-bytes), user must explicitly
+confirm sending incomplete context. Set to nil to skip confirmation.
+
+This is a safety rail to prevent accidental loss of important file contents."
+  :type 'boolean :group 'carriage)
+(make-variable-buffer-local 'carriage-mode-confirm-truncated-context)
+
 
 
 
@@ -476,8 +486,9 @@ and is subject to standard context limits and caching."
   "Max number of files to include from context sources."
   :type 'integer :group 'carriage)
 
-(defcustom carriage-mode-context-max-total-bytes 2097152
-  "Max total bytes of file contents included from context sources."
+(defcustom carriage-mode-context-max-total-bytes 16777216
+  "Max total bytes of file contents included from context sources.
+Default is 16MB. Use P1/P3 profile toggle for per-buffer control."
   :type 'integer :group 'carriage)
 
 (defcustom carriage-mode-wip-branch "carriage/WIP"
@@ -1845,11 +1856,14 @@ Deduplicates segments if MODEL already contains provider/backend."
                     ((stringp mo) mo)
                     ((null mo) "")
                     (t (format "%s" mo)))))
-      (let* ((parts (and (stringp mo-str) (not (string-empty-p mo-str))
-                         (split-string mo-str ":" t)))
-             (n (length parts)))
+      (let* ((mo-str-safe (or mo-str ""))
+             (parts (and (stringp mo-str-safe) (not (string-empty-p mo-str-safe))
+                         (split-string mo-str-safe ":" t)))
+             (n (length (or parts '()))))
         (cond
          ;; No model → return backend (or empty)
+         ((or (null mo-str) (string-empty-p mo-str))
+          (or be-str ""))
          ((or (null parts) (zerop n))
           (or be-str ""))
          ;; MODEL already like "backend:...": return as-is
@@ -2574,13 +2588,20 @@ Never signals."
 
 (defun carriage--context-collect-and-format (buffer target)
   "Return formatted external context text for BUFFER injected at TARGET, or nil.
-Best-effort: never signal."
+Best-effort: never signal.
+
+When context is truncated due to limits, prompt user for confirmation before
+proceeding with incomplete context (unless `carriage-mode-confirm-truncated-context' is nil)."
   (condition-case _e
       (when (and (require 'carriage-context nil t)
                  (carriage--context-sources-enabled-p))
         (let* ((root (or (carriage-project-root) default-directory))
                (col (carriage-context-collect buffer root))
-               (ctx-text (when col (carriage-context-format col :where target))))
+               (ctx-text (when col (carriage-context-format col :where target)))
+               ;; Ensure ctx-text is always a string (never nil)
+               (ctx-text (if (and (stringp ctx-text) (> (length ctx-text) 0))
+                             ctx-text
+                           "")))
           (when col
             ;; Traffic: log context summary and individual elements (paths only)
             (let* ((files (plist-get col :files))
@@ -2717,33 +2738,48 @@ Best-effort: never signal."
                                 (if (and (stringp ctx-text)
                                          (string-match-p "#\\+begin_map\\b" ctx-text))
                                     "t" "nil"))
-          ctx-text))
-    (error nil)))
+          ;; Prompt for confirmation if context was truncated (only if omitted > 0)
+          (let* ((meta (carriage--context-meta-from-text ctx-text))
+                 (limited (plist-get meta :limited))
+                 (omitted (or (plist-get meta :omitted) 0))
+                 (need-confirm (and limited (> omitted 0)))
+                 (confirmed
+                  (or (not need-confirm)
+                      (not (boundp 'carriage-mode-confirm-truncated-context))
+                      (not carriage-mode-confirm-truncated-context)
+                      (bound-and-true-p noninteractive)
+                      (y-or-n-p (format "Контекст усечён: пропущено %d файл(ов). Отправить? " omitted)))))
+            (if confirmed
+                ctx-text
+              (carriage-log "context: send cancelled by user (truncated context)")
+              (signal 'quit nil))))
+        (error (or ctx-text "")))))
 
 (defun carriage--context-meta-from-text (ctx-text)
   "Extract meta info from formatted CTX-TEXT (see `carriage-context-format').
 Return plist: (:omitted N :limited BOOL). Best-effort; never signals."
   (condition-case _e
-      (let* ((s (or ctx-text ""))
-             ;; Header example:
-             ;;   ;; Context (system): files=23 included=22 omitted=1 total-bytes=...
+      (let* ((s (if (stringp ctx-text) ctx-text ""))
+             ;; Защита от пустой строки
+             (s-nonempty (if (> (length s) 0) s ""))
              (omitted
-              (or (when (string-match "^[; \t]*;;[ \t]*Context ([^)]*):\\s-+files=[0-9]+\\s-+included=[0-9]+\\s-+omitted=\\([0-9]+\\)\\b" s)
+              (or (when (and (> (length s) 0)
+                             (string-match "^[; \t]*;;[ \t]*Context ([^)]*):\\s-+files=[0-9]+\\s-+included=[0-9]+\\s-+omitted=\\([0-9]+\\)\\b" s))
                     (string-to-number (match-string 1 s)))
-                  (when (string-match "\\bomitted=\\([0-9]+\\)\\b" s)
+                  (when (and (> (length s) 0)
+                             (string-match "\\bomitted=\\([0-9]+\\)\\b" s))
                     (string-to-number (match-string 1 s)))
                   0))
-             ;; Limit indicators currently appear as warnings like:
-             ;;   ;; limit reached, include path only: ...
-             ;; Or plan truncation warnings:
-             ;;   CTXPLAN_W_LIMIT: truncated by max-files=...
+             ;; Ограничение есть ТОЛЬКО если omitted > 0
+             (has-omission (> (or omitted 0) 0))
              (limited
-              (or (string-match-p "limit reached, include path only:" s)
-                  (string-match-p "CTXPLAN_W_LIMIT" s)
-                  (string-match-p "truncated by max-files" s)
-                  (string-match-p "CTX_TIMEOUT" s))))
+              (and has-omission
+                   (or (and (> (length s) 0) (string-match-p "limit reached, include path only:" s))
+                       (and (> (length s) 0) (string-match-p "CTXPLAN_W_LIMIT" s))
+                       (and (> (length s) 0) (string-match-p "truncated by max-files" s))
+                       (and (> (length s) 0) (string-match-p "CTX_TIMEOUT" s))))))
         (list :omitted (max 0 (or omitted 0))
-              :limited (and limited t)))
+              :limited (and has-omission limited)))
     (error (list :omitted 0 :limited nil))))
 
 (defun carriage-fingerprint-note-context-meta (meta)
@@ -2882,11 +2918,16 @@ SOURCE is 'buffer or 'subtree. BUFFER is the source buffer.
 May include :context-text and :context-target per v1.1."
   (with-current-buffer buffer
     (let* ((payload-raw (carriage--payload-from-source source buffer))
+           ;; Ensure payload is always a string
+           (payload-raw (if (stringp payload-raw) payload-raw ""))
            (payload (carriage--sanitize-payload-for-llm payload-raw))
+           (payload (if (stringp payload) payload ""))
            (target (carriage--context-target))
            (ctx-text (carriage--context-collect-and-format buffer target))
+           (ctx-text (if (stringp ctx-text) ctx-text ""))
            (ctx-meta (carriage--context-meta-from-text ctx-text))
            (org-note (ignore-errors (carriage--org-structure--prompt-note buffer)))
+           (org-note (if (stringp org-note) org-note ""))
            (profile (carriage--context-profile-symbol buffer))
            (doc-scope (carriage--doc-context-scope-symbol buffer))
            (suite (and (boundp 'carriage-mode-suite) carriage-mode-suite))
@@ -2914,10 +2955,10 @@ May include :context-text and :context-target per v1.1."
                       :suite suite
                       :file-visibility-note file-visibility-note)))
       (setq ctx-text
-            (if (and (stringp ctx-text) (not (string-empty-p ctx-text)))
+            (if (> (length ctx-text) 0)
                 (concat project-state-note "\n" ctx-text)
               project-state-note))
-      (when (and (stringp ctx-text) (not (string-empty-p ctx-text)))
+      (when (> (length ctx-text) 0)
         (setq res (append res (list :context-text ctx-text :context-target target))))
       (when (listp ctx-meta)
         (setq res (append res (list :context-meta ctx-meta))))
@@ -2927,6 +2968,122 @@ May include :context-text and :context-target per v1.1."
                           (list :typedblocks-structure-hint
                                 (and carriage-mode-typedblocks-structure-hint t)))))
       res)))
+
+;; -------------------------------------------------------------------
+;; Dry send: preview the exact system+prompt built for Send (no dispatch).
+;;
+;; Requirements:
+;; - Show the "real" prompt as it would be sent (system+prompt), built through
+;;   the same pipeline (`carriage--build-context' + `carriage-build-prompt').
+;; - For `In file <path>:' sections, bodies may be elided, but the markers and
+;;   structure must remain visible (`In file ...:' + begin_src/end_src).
+(defun carriage--dry-send--elide-in-file-bodies (text)
+  "Return TEXT with file bodies inside `In file <path>:' sections elided.
+
+Keeps:
+- \"In file <path>:\" marker line
+- all following comment lines (authoritative-text notes)
+- the `#+begin_src ...` and `#+end_src` markers
+
+Replaces only the body between begin_src/end_src with a placeholder line.
+
+Best-effort; never signals."
+  (condition-case _e
+      (with-temp-buffer
+        (insert (or text ""))
+        (goto-char (point-min))
+        (let ((case-fold-search nil))
+          (while (re-search-forward "^In file \\(.+\\):[ \t]*$" nil t)
+            (let* ((file (match-string-no-properties 1))
+                   (search-limit (save-excursion
+                                   ;; Keep search window bounded to reduce false positives.
+                                   (forward-line 60)
+                                   (point))))
+              (when (re-search-forward "^[ \t]*#\\+begin_src\\b.*$" search-limit t)
+                (forward-line 1)
+                (let ((body-beg (point)))
+                  (when (re-search-forward "^[ \t]*#\\+end_src\\b.*$" nil t)
+                    (let* ((body-end (line-beginning-position))
+                           (bytes (string-bytes
+                                   (buffer-substring-no-properties body-beg body-end))))
+                      (delete-region body-beg body-end)
+                      (goto-char body-beg)
+                      (insert (format ";; [content elided: %d bytes for %s]\n"
+                                      (max 0 (or bytes 0))
+                                      (or file "-"))))))))))
+        (buffer-substring-no-properties (point-min) (point-max)))
+    (error (or text ""))))
+
+(defun carriage--dry-send--display (origin system prompt meta)
+  "Display dry-send preview buffer for ORIGIN with SYSTEM/PROMPT/META."
+  (let ((buf (get-buffer-create "*carriage-dry-send*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (ignore-errors (org-mode))
+        (insert "* Carriage dry-send preview\n\n")
+        (insert "** Meta\n")
+        (insert (format "- origin: %s\n" (buffer-name origin)))
+        (when (listp meta)
+          (insert (format "- intent: %S\n" (plist-get meta :intent)))
+          (insert (format "- suite: %S\n" (plist-get meta :suite)))
+          (insert (format "- backend: %S\n" (plist-get meta :backend)))
+          (when (plist-get meta :provider)
+            (insert (format "- provider: %s\n" (plist-get meta :provider))))
+          (insert (format "- model: %s\n" (or (plist-get meta :model) "")))
+          (when (plist-get meta :full-id)
+            (insert (format "- full-id: %s\n" (plist-get meta :full-id))))
+          (insert (format "- context-injection: %S\n" (plist-get meta :context-target)))
+          (insert (format "- source: %S\n" (plist-get meta :source))))
+        (insert "\n** System\n\n")
+        (insert "#+begin_src text :results output\n")
+        (insert (or system ""))
+        (unless (string-suffix-p "\n" (or system "")) (insert "\n"))
+        (insert "#+end_src\n\n")
+        (insert "** Prompt\n\n")
+        (insert "#+begin_src text :results output\n")
+        (insert (or prompt ""))
+        (unless (string-suffix-p "\n" (or prompt "")) (insert "\n"))
+        (insert "#+end_src\n\n")
+        (goto-char (point-min))
+        (view-mode 1)))
+    (if (fboundp 'carriage--display-aux-buffer)
+        ;; Similar to report: show in a side window.
+        (carriage--display-aux-buffer buf 'top 0.50 t)
+      (pop-to-buffer buf))
+    buf))
+
+;;;###autoload
+(defun carriage-dry-send ()
+  "Preview the exact prompt (system+prompt) that would be sent by Send commands.
+
+Prefix arg:
+- with C-u, build preview for current subtree (same as Send Subtree);
+- without prefix arg, build preview for whole buffer.
+
+Notes:
+- Does not dispatch anything to transport.
+- For readability, file bodies inside \"In file ...\" sections are elided in the preview."
+  (interactive)
+  (let* ((origin (current-buffer))
+         (source (if current-prefix-arg 'subtree 'buffer))
+         (ctx (carriage--build-context source origin))
+         (built (carriage-build-prompt carriage-mode-intent carriage-mode-suite ctx))
+         (ctx-target (or (plist-get ctx :context-target) 'system))
+         (sys0 (plist-get built :system))
+         (pr0 (plist-get built :prompt))
+         (sys (carriage--dry-send--elide-in-file-bodies sys0))
+         (pr  (carriage--dry-send--elide-in-file-bodies pr0))
+         (full-id (ignore-errors (carriage-llm-full-id)))
+         (meta (list :intent carriage-mode-intent
+                     :suite carriage-mode-suite
+                     :backend carriage-mode-backend
+                     :provider carriage-mode-provider
+                     :model carriage-mode-model
+                     :full-id full-id
+                     :context-target ctx-target
+                     :source source)))
+    (carriage--dry-send--display origin sys pr meta)))
 
 ;;; Commands (stubs/minimal implementations)
 
@@ -4208,18 +4365,10 @@ Stages as needed depending on staging policy; with 'none, runs git add -A then r
 
 ;;;###autoload
 (defun carriage-select-suite (&optional suite)
-  "Select Suite (sre|aibo|udiff)."
+  "Select Suite for current active LLM contract."
   (interactive)
-  (let* ((choices
-          (condition-case _e
-              (let ((ids (and (fboundp 'carriage-suite-ids) (carriage-suite-ids))))
-                (if (and ids (listp ids))
-                    (mapcar (lambda (s) (if (symbolp s) (symbol-name s) (format "%s" s))) ids)
-                  '("sre" "aibo" "udiff")))
-            (error '("sre" "aibo" "udiff"))))
-         (default (if (symbolp carriage-mode-suite)
-                      (symbol-name carriage-mode-suite)
-                    (or carriage-mode-suite "aibo")))
+  (let* ((choices '("aibo"))
+         (default "aibo")
          (sel (or suite (completing-read "Suite: " choices nil t default))))
     (setq carriage-mode-suite (intern sel))
     (message "Carriage suite: %s" carriage-mode-suite)

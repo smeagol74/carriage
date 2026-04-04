@@ -1751,19 +1751,18 @@ When BUFFER is provided, also include applied patch metadata for LLM awareness."
                       (has-text (if (stringp (plist-get f :content)) "true" "false")))
                  (format "%s|%s|%s" rel exists has-text)))
              files))
-           #'string<)))
-    (applied-summary
-     (when (and buffer (buffer-live-p buffer))
-       (let ((patches (carriage-context--collect-applied-patches buffer)))
-         (carriage-context--format-applied-patches-summary patches))))
-    (manifest
-     (when rows
-       (concat "#+begin_state_manifest\n"
-               "path|exists|has_text\n"
-               (mapconcat #'identity rows "\n")
-               "\n#+end_state_manifest\n"))))
-  (concat (or applied-summary "") (or manifest ""))))
-
+           #'string<))
+         (applied-summary
+          (when (and buffer (buffer-live-p buffer))
+            (let ((patches (carriage-context--collect-applied-patches buffer)))
+              (carriage-context--format-applied-patches-summary patches))))
+         (manifest
+          (when rows
+            (concat "#+begin_state_manifest\n"
+                    "path|exists|has_text\n"
+                    (mapconcat #'identity rows "\n")
+                    "\n#+end_state_manifest\n"))))
+    (concat (or applied-summary "") (or manifest ""))))
 
 (defun carriage-context-format (ctx &key where)
   "Format CTX (plist from carriage-context-collect) into a string for insertion.

@@ -150,22 +150,25 @@ FRAG is STRING or function (lambda (ctx) STRING)."
                              parts)))
     (mapconcat #'identity vals (or sep "\n"))))
 
-(defun carriage--suite-guardrails (ops)
-  "Return common guardrails string for Code/Hybrid intents, tailored to allowed OPS."
-  (let* ((allowed (mapconcat (lambda (o) (format "%s" o)) ops ", ")))
-    (mapconcat #'identity
-               (list
-                "=== PATCH HEADER FORMAT (GLOBAL, STRICT) ==="
-                "CORRECT: #+begin_patch (:op \"aibo\" :version \"1\" :file \"path.el\")"
-                "WRONG: #+begin_patch\\n:op ...\\n:file ... — REJECT. Header MUST be single-line."
-                "One block = one operation. NEVER split header params across lines."
-                ""
-                "=== SUITE FORMAT ==="
-                "sre/aibo: begin_from/begin_to. udiff: unified diff. NEVER :from/:to except rename."
-                ""
-                "=== MODE CONTRACT ==="
-                "Code: ONLY #+begin_patch blocks. Hybrid: prose + patches when user requests changes.")
-               "\n")))
+(defun carriage--suite-guardrails (_ops)
+  "Return common guardrails string for current AIBO-first Code/Hybrid contract."
+  (mapconcat #'identity
+             (list
+              "=== PATCH HEADER FORMAT (GLOBAL, STRICT) ==="
+              "CORRECT: #+begin_patch (:op \"aibo\" :version \"1\" :file \"path.el\")"
+              "WRONG: #+begin_patch\\n:op ...\\n:file ... — REJECT. Header MUST be single-line."
+              "One block = one operation. NEVER split header params across lines."
+              ""
+              "=== ACTIVE EDIT FORMAT ==="
+              "Content edits MUST use AIBO literal replacements with begin_from/begin_to nested blocks."
+              "Allowed file ops: create, delete, rename."
+              "NEVER use :from/:to except rename."
+              "NEVER output unified diff."
+              "NEVER output :op \"patch\" or :op \"sre\" blocks."
+              ""
+              "=== MODE CONTRACT ==="
+              "Code: ONLY #+begin_patch blocks. Hybrid: prose + patches when user requests changes.")
+             "\n"))
 
 
 (defun carriage--typedblocks-hint-fragment (intent ctx)
@@ -272,30 +275,16 @@ CTX may contain keys like :payload, :context-text, :context-target, :delim, :fil
                 (sys1 (if fp (concat sys0 "\n;; fingerprint: " fp) sys0)))
            (list :system sys1 :prompt prompt))))
       ((or 'Code 'Hybrid)
-       (let* ((ops (progn
-                     (unless (carriage-suite-known-p suite-id)
-                       (signal (carriage-error-symbol 'MODE_E_DISPATCH)
-                               (list (format "Unknown suite: %S" suite-id))))
-                     (carriage-suite-ops suite-id)))
+       (let* ((ops '(aibo create delete rename))
               ;; Best effort: ensure op modules are loaded so their fragments are registered.
               (_ (dolist (op ops)
                    (unless (carriage-format-get op "1")
                      (pcase op
-                       ('sre
-                        (or (and (boundp 'carriage--ops-dir) carriage--ops-dir
-                                 (load (expand-file-name "carriage-op-sre" carriage--ops-dir) t t))
-                            (load "ops/carriage-op-sre" t t)
-                            (require 'carriage-op-sre nil t)))
                        ('aibo
                         (or (and (boundp 'carriage--ops-dir) carriage--ops-dir
                                  (load (expand-file-name "carriage-op-aibo" carriage--ops-dir) t t))
                             (load "ops/carriage-op-aibo" t t)
                             (require 'carriage-op-aibo nil t)))
-                       ('patch
-                        (or (and (boundp 'carriage--ops-dir) carriage--ops-dir
-                                 (load (expand-file-name "carriage-op-patch" carriage--ops-dir) t t))
-                            (load "ops/carriage-op-patch" t t)
-                            (require 'carriage-op-patch nil t)))
                        ((or 'create 'delete 'rename)
                         (or (and (boundp 'carriage--ops-dir) carriage--ops-dir
                                  (load (expand-file-name "carriage-op-file" carriage--ops-dir) t t))
@@ -338,13 +327,8 @@ CTX may contain keys like :payload, :context-text, :context-target, :delim, :fil
                           (concat ctx-text "\n" payload)
                         payload)))
          (carriage--assert-suite-safety suite-id base)
-         ;; Scrub suite-specific forbidden phrases just before finalizing system text.
-         ;; For Suite 'sre' tests require absence of the literal phrase "unified diff".
-         (let* ((sys0 (if (eq suite-id 'sre)
-                          (replace-regexp-in-string "unified diff" "" system t t)
-                        system))
-                (fp (ignore-errors (secure-hash 'sha1 sys0)))
-                (sys1 (if fp (concat sys0 "\n;; fingerprint: " fp) sys0)))
+         (let* ((fp (ignore-errors (secure-hash 'sha1 system)))
+                (sys1 (if fp (concat system "\n;; fingerprint: " fp) system)))
            (list :system sys1 :prompt prompt))))
       (_
        (signal (carriage-error-symbol 'MODE_E_DISPATCH)
