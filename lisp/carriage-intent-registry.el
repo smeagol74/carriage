@@ -79,7 +79,7 @@ CTX MAY carry: :suite, :context-meta, :profile."
        ((or 'sre 'aibo) "Format: begin_from/begin_to.\n")
        ('udiff "Format: unified diff.\n")
        (_ ""))
-     (when (and (integerp om) (> om 0)) (format "Omitted files: %s.\n" om)))))
+     (when (and (integerp om) (> om 0)) (format "Omitted: %s.\n" om)))))
 
 (defun carriage--intent-frag-org-formatting (_ctx)
   "Base formatting rules for answers: Org-mode only (never Markdown)."

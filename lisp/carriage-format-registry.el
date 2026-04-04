@@ -18,13 +18,14 @@
 ;;; Commentary:
 ;; Registry mapping (op . version) to parser/dry-run/apply handlers.
 ;;
-;; REFERENCE-ONLY FOR DEVELOPERS — does NOT contribute to LLM system prompts.
-;; LLM prompts are built EXCLUSIVELY in carriage-suite.el and carriage-intent-registry.el.
-;; Comments here are for human maintainers only.
+;; === REFERENCE-ONLY FOR DEVELOPERS ===
+;; This file does NOT contribute to LLM system prompts.
+;; LLM prompts are built EXCLUSIVELY in:
+;;   - carriage-suite.el (guardrails, suite format)
+;;   - carriage-intent-registry.el (intent contracts)
 ;;
+;; Comments/docstrings here are for human maintainers only.
 ;; DO NOT put MUST/NEVER/CRITICAL instructions here — they do not reach the LLM.
-;; All prompt-fragments that affect LLM behavior must be in carriage-suite.el or
-;; carriage-intent-registry.el.
 ;;
 ;;; Code:
 

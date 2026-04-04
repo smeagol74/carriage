@@ -100,10 +100,14 @@ leaving an empty block with an annotated header."
 ;;; Plan-level pipeline
 
 (defun carriage--post-apply-handle-applied-blocks (report)
-  "Dispatch post-apply block handling per `carriage-apply-applied-block-policy'."
+  "Dispatch post-apply block handling per `carriage-apply-applied-block-policy'.
+Also invalidates applied patches cache so next context collection sees updated state."
   (pcase carriage-apply-applied-block-policy
     ('annotate (ignore-errors (carriage--annotate-applied-blocks-in-report report)))
-    (_ nil)))
+    (_ nil))
+  ;; Mark applied patches cache dirty so next context collection picks up new state
+  (when (boundp 'carriage-context--applied-patches-dirty)
+    (setq carriage-context--applied-patches-dirty t)))
 
 (defun carriage--annotate-applied-blocks-in-report (report)
   "Best-effort: annotate source begin_patch blocks from REPORT with :applied t and metadata.
@@ -275,30 +279,41 @@ snapshot only when no explicit manifest block is present in the current buffer."
   "Return nil when ITEM passes request-state checks, else a fail row plist."
   (let* ((op (carriage--plan-get item :op))
          (path (carriage--plan-target-path item))
-         (state (carriage--request-state-for-item item repo-root))
-         (source (plist-get state :source))
-         (exists (plist-get state :exists))
-         (has-text (plist-get state :has-text)))
-    (cond
-     ((and (eq op 'create) state exists)
-      (carriage--report-fail op :file path
-                             :details (if (eq source 'manifest)
-                                          "Create forbidden: path already exists in current state manifest"
-                                        "Create forbidden: path already exists in current project state")))
-     ((and (carriage--state-sensitive-op-p op) (null state))
-      (carriage--report-fail op :file (or path "-")
-                             :details "State-sensitive op rejected: path missing from current request state"))
-     ((and (carriage--state-sensitive-op-p op) (not exists))
-      (carriage--report-fail op :file (or path "-")
-                             :details (if (eq source 'manifest)
-                                          "State-sensitive op rejected: file does not exist in current state manifest"
-                                        "State-sensitive op rejected: file does not exist in current project state")))
-     ((and (carriage--text-required-op-p op) (not has-text))
-      (carriage--report-fail op :file (or path "-")
-                             :details (if (eq source 'manifest)
-                                          "Edit rejected: file text is not present in current request context"
-                                        "Edit rejected: file text is not available from current project state")))
-     (t nil))))
+         ;; CRITICAL: Invalidate file cache before checking text for patch/sre/aibo ops
+         ;; to avoid stale content from TTL cache (carriage-context-file-cache-ttl=5.0).
+         ;; This prevents LLM from generating patches for already-modified code.
+         (_cache-invalidated
+          (when (and (carriage--text-required-op-p op) (stringp path))
+            (when (require 'carriage-context nil t)
+              (when (fboundp 'carriage-context-invalidate-file-cache)
+                ;; Invalidate by truename for precision
+                (let* ((abs (ignore-errors (carriage-normalize-path repo-root path)))
+                       (tru (and (stringp abs) (ignore-errors (file-truename abs)))))
+                  (carriage-context-invalidate-file-cache tru)))))))
+    (let* ((state (carriage--request-state-for-item item repo-root))
+           (source (plist-get state :source))
+           (exists (plist-get state :exists))
+           (has-text (plist-get state :has-text)))
+      (cond
+       ((and (eq op 'create) state exists)
+        (carriage--report-fail op :file path
+                               :details (if (eq source 'manifest)
+                                            "Create forbidden: path already exists in current state manifest"
+                                          "Create forbidden: path already exists in current project state")))
+       ((and (carriage--state-sensitive-op-p op) (null state))
+        (carriage--report-fail op :file (or path "-")
+                               :details "State-sensitive op rejected: path missing from current request state"))
+       ((and (carriage--state-sensitive-op-p op) (not exists))
+        (carriage--report-fail op :file (or path "-")
+                               :details (if (eq source 'manifest)
+                                            "State-sensitive op rejected: file does not exist in current state manifest"
+                                          "State-sensitive op rejected: file does not exist in current project state")))
+       ((and (carriage--text-required-op-p op) (not has-text))
+        (carriage--report-fail op :file (or path "-")
+                               :details (if (eq source 'manifest)
+                                            "Edit rejected: file text is not present in current request context"
+                                          "Edit rejected: file text is not available from current project state")))
+       (t nil)))))
 
 (defun carriage--dry-run-dispatch (item repo-root)
   "Dispatch dry-run for a single ITEM with REPO-ROOT.

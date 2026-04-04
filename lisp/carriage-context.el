@@ -429,6 +429,31 @@ Uses a lightweight cache and a dirty flag to avoid rescanning the buffer on ever
   "Cache of file reads keyed by truename.
 Each value is a plist: (:mtime MT :size SZ :time TS :ok BOOL :data STRING-OR-REASON).")
 
+;;;###autoload
+(defun carriage-context-invalidate-file-cache (&optional path)
+  "Invalidate file cache entry for PATH (truename) or entire cache if PATH is nil.
+This is critical for patch/sre/aibo operations to avoid stale content.
+
+When PATH is provided:
+- Invalidates only that specific file's cache entry.
+
+When PATH is nil:
+- Clears the entire file cache (use sparingly, e.g., on project-wide changes).
+
+Returns non-nil on success. Best-effort: never signals."
+  (condition-case _e
+      (if (and (stringp path) (not (string-empty-p path)))
+          (progn
+            (remhash path carriage-context--file-cache)
+            (when carriage-context-debug
+              (carriage-log "Context: cache invalidated for path=%s" path))
+            t)
+        (clrhash carriage-context--file-cache)
+        (when carriage-context-debug
+          (carriage-log "Context: entire file cache cleared"))
+        t)
+    (error nil)))
+
 (defvar carriage-context--root-tru-cache (make-hash-table :test 'equal)
   "Cache mapping project ROOT → truenamed directory (with trailing slash).")
 
@@ -1622,8 +1647,91 @@ is used for the next iteration and it must contain the full list of needed paths
       (when lines
         (mapconcat (lambda (s) (concat ";; " s)) lines "\n")))))
 
-(defun carriage-context--state-manifest-format (ctx)
-  "Return minimal begin_state_manifest block for CTX."
+(defvar-local carriage-context--applied-patches-cache nil
+  "Cache of applied patch metadata for the current buffer.
+Plist keys:
+  :patches — list of plists (:path PATH :ts TIMESTAMP :op OP)
+  :updated — float-time of last update.
+
+This is used to inject applied patch state into context for LLM awareness.")
+
+(defvar-local carriage-context--applied-patches-dirty t
+  "When non-nil, applied patches cache must be recomputed.")
+
+(defun carriage-context--applied-patches-mark-dirty (&rest _args)
+  "Mark applied patches cache dirty.
+Designed to be called after apply operations complete."
+  (setq carriage-context--applied-patches-dirty t))
+
+(add-hook 'carriage-mode-hook
+          (lambda ()
+            ;; Invalidate applied patches cache when patch blocks are modified
+            (add-hook 'after-change-functions
+                      #'carriage-context--applied-patches-mark-dirty
+                      nil t)))
+
+(defun carriage-context--collect-applied-patches (buffer)
+  "Collect applied patch metadata from BUFFER.
+Returns list of plists: (:path PATH :ts TIMESTAMP :op OP :result RESULT)."
+  (with-current-buffer buffer
+    (if (and (not carriage-context--applied-patches-dirty)
+             (listp carriage-context--applied-patches-cache)
+             (listp (plist-get carriage-context--applied-patches-cache :patches)))
+        (plist-get carriage-context--applied-patches-cache :patches)
+      (save-excursion
+        (goto-char (point-min))
+        (let ((case-fold-search t)
+              (acc '()))
+          (while (re-search-forward "^[ \t]*#\\+begin_patch\\s-+\\((.*)\\)[ \t]*$" nil t)
+            (let* ((sexp-str (match-string 1))
+                   (plist (condition-case _e
+                              (car (read-from-string sexp-str))
+                            (error nil)))
+                   (op (and (listp plist) (plist-get plist :op)))
+                   (applied (and (listp plist) (plist-get plist :applied)))
+                   (ts (and (listp plist) (plist-get plist :applied_at)))
+                   (result (and (listp plist) (plist-get plist :result))))
+              (when (and (listp plist) applied)
+                (let ((target
+                       (cond
+                        ((eq op 'rename)
+                         (let ((a (plist-get plist :from))
+                               (b (plist-get plist :to)))
+                           (format "%s → %s"
+                                   (or (and (stringp a) a) "-")
+                                   (or (and (stringp b) b) "-"))))
+                        ((eq op 'patch) (plist-get plist :path))
+                        (t (plist-get plist :file)))))
+                  (when (and (stringp target) (not (string-empty-p target)))
+                    (push (list :path target
+                                :ts (or ts (format-time-string "%Y-%m-%d %H:%M"))
+                                :op (symbol-name op)
+                                :result (or result "Applied"))
+                          acc))))))
+          (setq acc (nreverse acc))
+          (setq carriage-context--applied-patches-cache (list :patches acc))
+          (setq carriage-context--applied-patches-dirty nil)
+          acc)))))
+
+(defun carriage-context--format-applied-patches-summary (patches)
+  "Format applied patches list into LLM-facing summary string."
+  (when (and (listp patches) (> (length patches) 0))
+    (let ((lines
+           (mapcar
+            (lambda (p)
+              (format ";; - %s (%s) — %s @%s"
+                      (plist-get p :path)
+                      (plist-get p :op)
+                      (plist-get p :result)
+                      (plist-get p :ts)))
+            patches)))
+      (concat ";; Applied patches in this session:\n"
+              (mapconcat #'identity lines "\n")
+              "\n"))))
+
+(defun carriage-context--state-manifest-format (ctx &optional buffer)
+  "Return minimal begin_state_manifest block for CTX.
+When BUFFER is provided, also include applied patch metadata for LLM awareness."
   (let* ((files (or (plist-get ctx :files) '()))
          (rows
           (sort
@@ -1644,11 +1752,18 @@ is used for the next iteration and it must contain the full list of needed paths
                  (format "%s|%s|%s" rel exists has-text)))
              files))
            #'string<)))
-    (when rows
-      (concat "#+begin_state_manifest\n"
-              "path|exists|has_text\n"
-              (mapconcat #'identity rows "\n")
-              "\n#+end_state_manifest\n"))))
+    (applied-summary
+     (when (and buffer (buffer-live-p buffer))
+       (let ((patches (carriage-context--collect-applied-patches buffer)))
+         (carriage-context--format-applied-patches-summary patches))))
+    (manifest
+     (when rows
+       (concat "#+begin_state_manifest\n"
+               "path|exists|has_text\n"
+               (mapconcat #'identity rows "\n")
+               "\n#+end_state_manifest\n"))))
+  (concat (or applied-summary "") (or manifest ""))))
+
 
 (defun carriage-context-format (ctx &key where)
   "Format CTX (plist from carriage-context-collect) into a string for insertion.

@@ -157,17 +157,14 @@ FRAG is STRING or function (lambda (ctx) STRING)."
                (list
                 "=== PATCH HEADER FORMAT (GLOBAL, STRICT) ==="
                 "CORRECT: #+begin_patch (:op \"aibo\" :version \"1\" :file \"path.el\")"
-                "WRONG: #+begin_patch followed by :op/:file on separate lines — REJECT."
-                "Header MUST be single-line parenthesized plist. One block = one op."
-                ""
-                "=== DECISION TREE ==="
-                "begin_map + exists=false -> create. In file <path>: visible -> edit. text missing -> begin_context."
+                "WRONG: #+begin_patch\\n:op ...\\n:file ... — REJECT. Header MUST be single-line."
+                "One block = one operation. NEVER split header params across lines."
                 ""
                 "=== SUITE FORMAT ==="
                 "sre/aibo: begin_from/begin_to. udiff: unified diff. NEVER :from/:to except rename."
                 ""
                 "=== MODE CONTRACT ==="
-                "Code: ONLY #+begin_patch blocks. Hybrid: prose + #+begin_patch when user requests changes.")
+                "Code: ONLY #+begin_patch blocks. Hybrid: prose + patches when user requests changes.")
                "\n")))
 
 

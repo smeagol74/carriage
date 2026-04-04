@@ -640,6 +640,14 @@ When BUFFER is non-nil, operate in that buffer (default is current buffer)."
           ;; Invalidate send ownership before reopening the gate, so stale
           ;; send-prepare/reentry callbacks cannot resurrect the just-finished send.
           (carriage-transport-invalidate-send-owner buf)
+          ;; Update conversation state for multi-turn awareness
+          ;; This tracks modified files so next iteration's prompt includes state summary
+          (when (boundp 'carriage-transport--conversation-state)
+            (ignore-errors
+              (carriage-transport--update-conversation-state
+               (let ((rep (and (boundp 'carriage--last-apply-report) carriage--last-apply-report)))
+                 rep)
+               buf)))
           ;; Allow the next send only after the current request is fully finalized.
           (when (boundp 'carriage--send-in-flight)
             (setq carriage--send-in-flight nil))
@@ -656,6 +664,16 @@ When BUFFER is non-nil, operate in that buffer (default is current buffer)."
 
 ;;;###autoload
 (defun carriage-transport-dispatch (&rest args)
+  "Dispatch request ARGS to transport adapter with safe lazy loading.
+
+Injects conversation state summary into system prompt to prevent LLM from
+re-patching already-modified files in multi-turn conversations."
+  ;; Inject conversation state summary into system prompt
+  (let* ((system (plist-get args :system))
+         (buffer (plist-get args :buffer)))
+    (when (stringp system)
+      (let ((injected (carriage-transport--inject-conversation-summary system)))
+        (setq args (plist-put args :system injected)))))
   "Dispatch request ARGS to transport adapter with safe lazy loading.
 
 Contract:
@@ -782,6 +800,60 @@ is unavailable. Must never signal."
               (goto-char beg)
               (insert line "\n"))))))
     (buffer-substring-no-properties (point-min) (point-max))))
+
+(defvar carriage-transport--conversation-state nil
+  "Conversation state summary for multi-turn awareness.
+Plist keys:
+  :iterations — number of send iterations in current conversation
+  :modified-files — list of paths modified in last iteration
+  :last-ts — timestamp of last completion
+
+This is injected into system prompt to prevent LLM from re-patching already-modified files.")
+
+(defun carriage-transport--update-conversation-state (report &optional buffer)
+  "Update conversation state from apply/dry-run REPORT.
+Called after each completion to track modified files for next iteration."
+  (let* ((items (and (listp report) (plist-get report :items)))
+         (modified
+          (when (listp items)
+            (delq nil
+                  (mapcar
+                   (lambda (it)
+                     (when (eq (plist-get it :status) 'ok)
+                       (or (plist-get it :path) (plist-get it :file))))
+                   items)))))
+    (setq carriage-transport--conversation-state
+          (list :iterations (1+ (or (and (listp carriage-transport--conversation-state)
+                                         (plist-get carriage-transport--conversation-state :iterations))
+                                    0))
+                :modified-files modified
+                :last-ts (format-time-string "%Y-%m-%d %H:%M:%S")
+                :buffer (or buffer (current-buffer))))))
+
+(defun carriage-transport--format-conversation-summary ()
+  "Format conversation state into LLM-facing summary string.
+Returns nil if no conversation state exists."
+  (when (and (listp carriage-transport--conversation-state)
+             (plist-get carriage-transport--conversation-state :modified-files))
+    (let* ((state carriage-transport--conversation-state)
+           (iter (plist-get state :iterations))
+           (files (plist-get state :modified-files))
+           (ts (plist-get state :last-ts))
+           (file-list (mapconcat (lambda (f) (format "- %s" f)) files "\n")))
+      (concat ";; Conversation state:\n"
+              (format ";; - Iteration: %d\n" iter)
+              (format ";; - Last modified: %s\n" ts)
+              ";; - Files modified in previous iteration(s):\n"
+              file-list
+              "\n;; IMPORTANT: Do not re-patch files listed above. Their content has already been updated.\n"))))
+
+(defun carriage-transport--inject-conversation-summary (text)
+  "Inject conversation state summary into TEXT (system prompt).
+If no conversation state exists, returns TEXT unchanged."
+  (let ((summary (carriage-transport--format-conversation-summary)))
+    (if (and summary (stringp text))
+        (concat summary text)
+      text)))
 
 (defun carriage-transport--strip-internal-lines (text)
   "Remove internal Carriage marker lines from TEXT (best-effort, centralized).
