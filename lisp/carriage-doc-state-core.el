@@ -201,7 +201,7 @@ Searches backward for last #+title or first #+begin_src, or uses point-min."
     (let ((pl (ignore-errors (carriage-doc-state-read (current-buffer)))))
       (when (listp pl)
         (cl-dolist (cell (plist-member pl :CAR_MODE))
-          (carriage-doc-state--apply-if-bound (car cell) (cdr cell))))
+          (carriage-doc-state--apply-if-bound (car cell) (cdr cell)))
         pl))))
 
 ;;;###autoload

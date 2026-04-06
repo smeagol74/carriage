@@ -555,8 +555,7 @@ if an advice cannot be inspected or removed, ignore it."
                (carriage-context--pm-logf
                 "removed unknown trace advice fn=%S advice=%S"
                 fn ad)))
-           fn)))))
-  t)
+           fn))))))
 
 (carriage-context--project-map-disable-broken-trace-advice)
 

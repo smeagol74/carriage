@@ -53,12 +53,12 @@
 |------------|---------|-----------|--------|
 | `carriage-ui-faces.el` | defface definitions | 121 | ✓ Done |
 | `carriage-ui-spinner.el` | Spinner logic | 72 | ✓ Done |
-| `carriage-ui-modeline.el` | Segment builders, cache | ~1200 | Pending |
-| `carriage-ui-header.el` | Header-line | ~600 | Pending |
+| `carriage-ui-modeline.el` | Segment builders | 204 | ✓ Done |
+| `carriage-ui-header.el` | Header-line | 98 | ✓ Done |
 | `carriage-ui-state.el` | State, tooltips | ~400 | Pending |
 | `carriage-ui.el` | Main module | ~600 | Pending |
 
-**Status: 2/6 modules done**
+**Status: 4/6 modules done**
 
 ---
 
@@ -81,13 +81,13 @@
 
 | New Module | Content | Est. Size | Status |
 |------------|---------|-----------|--------|
+| `carriage-mode-core.el` | Mode definition, keymap, defcustoms | 145 | ✓ Done |
 | `carriage-mode-send.el` | Send buffer/subtree commands | 267 | ✓ Done |
 | `carriage-mode-apply.el` | Apply commands | 193 | ✓ Done |
-| `carriage-mode-core.el` | Mode definition, keymap | ~1500 | Pending |
 | `carriage-mode-context.el` | Context building | ~500 | Pending |
 | `carriage-mode.el` | Main module | ~1132 | Pending |
 
-**Status: 2/5 modules done**
+**Status: 3/5 modules done**
 
 ---
 
@@ -181,11 +181,15 @@ Check for extractable parts:
 | carriage-ui.el | Extracted carriage-ui-spinner.el | -55 |
 | carriage-context.el | Extracted 4 modules | -624 |
 | carriage-doc-state.el | Extracted 3 modules | -542 |
+| carriage-mode.el | Extracted carriage-mode-core.el | -145 |
 | carriage-mode.el | Extracted carriage-mode-send.el | -267 |
 | carriage-mode.el | Extracted carriage-mode-apply.el | -193 |
 | carriage-transport.el | Extracted 2 modules | -262 |
 
-**Total: ~2224 lines refactored, 16 new files created**
+| carriage-ui.el | Extracted carriage-ui-header.el | -98 |
+| carriage-ui.el | Extracted carriage-ui-modeline.el | -204 |
+
+**Total: ~2671 lines refactored, 20 new files created**
 
 ---
 

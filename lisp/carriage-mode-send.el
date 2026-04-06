@@ -142,7 +142,7 @@
               (t
                (setq carriage--send-dispatch-scheduled nil)
                (setq carriage--send-in-flight t)
-               (carriage--send-buffer--deferred-dispatch srcbuf origin-marker prefix generation)))))))))))
+               (carriage--send-buffer--deferred-dispatch srcbuf origin-marker prefix generation))))))))))
 
 ;;; Helper: calculate origin marker for send-subtree
 (defun carriage--send-subtree--calc-origin-marker ()

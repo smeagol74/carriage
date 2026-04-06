@@ -91,7 +91,7 @@
           (setq hit (or (looking-at-p "^[ \t]*#\\+begin_patch\\b")
                         (looking-at-p "^[ \t]*#\\+end_patch\\b"))))
         (when hit
-          (setq carriage-context--patched-files-dirty t)))))
+          (setq carriage-context--patched-files-dirty t))))))
 
 (defun carriage-context--doc-blocks-in-region (beg end)
   "Parse begin_context blocks within BEG..END and return plist:

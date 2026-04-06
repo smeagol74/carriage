@@ -110,7 +110,7 @@ Items are either (:kind path :value STRING) or (:kind visible-buffer :buffer BUF
               (setq state (carriage-context--push-file
                            (list :rel rel :true nil :content nil :reason 'size-limit)
                            state))
-              (setq state (plist-put state :skipped (1+ (plist-get state :skipped)))))
+              (setq state (plist-put state :skipped (1+ (plist-get state :skipped))))
               (plist-put state :total-bytes (+ total sz)))
           (setq state (carriage-context--push-file
                        (list :rel rel :true nil :content text)

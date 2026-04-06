@@ -492,15 +492,15 @@ When BUFFER is non-nil, operate in that buffer."
       (when (and (fboundp 'carriage--preloader-start)
                  (not (and (boundp 'carriage--preloader-overlay)
                            (overlayp carriage--preloader-overlay))))
-        (ignore-errors (carriage--preloader-start))))
-    ;; Return unregister lambda (bound to origin buffer)
-    (lambda ()
-      (when (buffer-live-p buf)
-        (with-current-buffer buf
-          (carriage-clear-abort-handler)
-          (carriage-transport--watchdog-stop buf)
-          (carriage-log "Transport: unregister abort handler rid=%s"
-                        (or (carriage-transport-current-request-id buf) "-")))))))
+        (ignore-errors (carriage--preloader-start)))
+      ;; Return unregister lambda (bound to origin buffer)
+      (lambda ()
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (carriage-clear-abort-handler)
+            (carriage-transport--watchdog-stop buf)
+            (carriage-log "Transport: unregister abort handler rid=%s"
+                          (or (carriage-transport-current-request-id buf) "-"))))))))
 
 ;;;###autoload
 (defun carriage-transport-streaming (&optional buffer)
@@ -675,69 +675,63 @@ re-patching already-modified files in multi-turn conversations."
          (buffer (plist-get args :buffer)))
     (when (stringp system)
       (let ((injected (carriage-transport--inject-conversation-summary system)))
-        (setq args (plist-put args :system injected)))))
-  "Dispatch request ARGS to transport adapter with safe lazy loading.
-
-Contract:
-- Prefer direct entry-point call (carriage-transport-<backend>-dispatch) when fboundp.
-- If missing, attempt one-shot lazy load of adapter (guarded), then call entry-point.
-- No recursion, no reliance on function cell replacement."
-  (carriage-transport-note-progress 'dispatch (plist-get args :buffer))
-  (when carriage-transport-debug-in-file-log
-    (let ((paths (carriage-transport--debug-summarize-in-file (plist-get args :system))))
-      (carriage-log "Transport: In file sections in SYSTEM: %S" paths)))
-  (carriage-traffic-log 'out "dispatch request rid=%s: %S"
-                        (or (carriage-transport-current-request-id (plist-get args :buffer)) "-")
-                        args)
-  (let* ((backend (plist-get args :backend))
-         (bsym (cond
-                ((symbolp backend) backend)
-                ((stringp backend) (intern backend))
-                (t (ignore-errors (intern (format "%s" backend)))))))
-    (pcase bsym
-      ;; GPTel backend
-      ('gptel
-       (cond
-        ((fboundp 'carriage-transport-gptel-v2-dispatch)
-         (apply #'carriage-transport-gptel-v2-dispatch args))
-        ((not carriage--transport-loading-adapter)
-         (let* ((carriage--transport-loading-adapter t))
-           (when (and (require 'gptel nil t)
-                      (require 'carriage-transport-gptel nil t))
-             (carriage-log "Transport: gptel adapter loaded on demand"))
-           (if (fboundp 'carriage-transport-gptel-v2-dispatch)
-               (apply #'carriage-transport-gptel-v2-dispatch args)
-             (carriage-log "Transport: no gptel entry-point; request dropped")
-             (carriage-transport-complete t)
-             (user-error "No transport adapter installed (gptel)"))))
-        (t
-         (carriage-log "Transport: adapter loading already in progress; dropping")
+        (setq args (plist-put args :system injected))))
+    (carriage-transport-note-progress 'dispatch buffer)
+    (when carriage-transport-debug-in-file-log
+      (let ((paths (carriage-transport--debug-summarize-in-file system)))
+        (carriage-log "Transport: In file sections in SYSTEM: %S" paths)))
+    (carriage-traffic-log 'out "dispatch request rid=%s: %S"
+                          (or (carriage-transport-current-request-id buffer) "-")
+                          args)
+    (let* ((backend (plist-get args :backend))
+           (bsym (cond
+                  ((symbolp backend) backend)
+                  ((stringp backend) (intern backend))
+                  (t (ignore-errors (intern (format "%s" backend)))))))
+      (pcase bsym
+        ;; GPTel backend
+        ('gptel
+         (cond
+          ((fboundp 'carriage-transport-gptel-v2-dispatch)
+           (apply #'carriage-transport-gptel-v2-dispatch args))
+          ((not carriage--transport-loading-adapter)
+           (let* ((carriage--transport-loading-adapter t))
+             (when (and (require 'gptel nil t)
+                        (require 'carriage-transport-gptel nil t))
+               (carriage-log "Transport: gptel adapter loaded on demand"))
+             (if (fboundp 'carriage-transport-gptel-v2-dispatch)
+                 (apply #'carriage-transport-gptel-v2-dispatch args)
+               (carriage-log "Transport: no gptel entry-point; request dropped")
+               (carriage-transport-complete t)
+               (user-error "No transport adapter installed (gptel)"))))
+          (t
+           (carriage-log "Transport: adapter loading already in progress; dropping")
+           (carriage-transport-complete t)
+           (user-error "No transport adapter installed (gptel)"))))
+        ;; Echo backend (dev)
+        ('echo
+         (cond
+          ((fboundp 'carriage-transport-echo-dispatch)
+           (apply #'carriage-transport-echo-dispatch args))
+          ((not carriage--transport-loading-adapter)
+           (let* ((carriage--transport-loading-adapter t))
+             (when (require 'carriage-transport-echo nil t)
+               (carriage-log "Transport: echo adapter loaded on demand"))
+             (if (fboundp 'carriage-transport-echo-dispatch)
+                 (apply #'carriage-transport-echo-dispatch args)
+               (carriage-log "Transport: no echo entry-point; request dropped")
+               (carriage-transport-complete t)
+               (user-error "No transport adapter installed (echo)"))))
+          (t
+           (carriage-log "Transport: adapter loading already in progress; dropping")
+           (carriage-transport-complete t)
+           (user-error "No transport adapter installed (echo)"))))
+        ;; Unknown backend
+        (_
+         (carriage-log "Transport: unknown backend=%s" bsym)
+         (signal (carriage-error-symbol 'LLM_E_BACKEND) (list (format "Unknown transport backend: %s" bsym)))
          (carriage-transport-complete t)
-         (user-error "No transport adapter installed (gptel)"))))
-      ;; Echo backend (dev)
-      ('echo
-       (cond
-        ((fboundp 'carriage-transport-echo-dispatch)
-         (apply #'carriage-transport-echo-dispatch args))
-        ((not carriage--transport-loading-adapter)
-         (let* ((carriage--transport-loading-adapter t))
-           (when (require 'carriage-transport-echo nil t)
-             (carriage-log "Transport: echo adapter loaded on demand"))
-           (if (fboundp 'carriage-transport-echo-dispatch)
-               (apply #'carriage-transport-echo-dispatch args)
-             (carriage-log "Transport: no echo entry-point; request dropped")
-             (carriage-transport-complete t)
-             (user-error "No transport adapter installed (echo)"))))
-        (t
-         (carriage-log "Transport: adapter loading already in progress; dropping")
-         (carriage-transport-complete t)
-         (user-error "No transport adapter installed (echo)"))))
-      ;; Unknown backend
-      (_
-       (carriage-log "Transport: unknown backend=%s" bsym)
-       (signal (carriage-error-symbol 'LLM_E_BACKEND) (list (format "Unknown transport backend: %s" bsym)))
-       (carriage-transport-complete t)
-       (user-error "Unknown transport backend: %s" bsym)))))
+         (user-error "Unknown transport backend: %s" bsym))))))
 
 (defun carriage-transport--payload-summarize-patch-blocks-fallback (text)
   "Transport-local fallback: summarize #+begin_patch blocks into one-line history markers.

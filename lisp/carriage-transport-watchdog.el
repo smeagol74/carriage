@@ -77,7 +77,7 @@ Optional WHAT describes the progress kind for diagnostics."
           (carriage-log "Transport: watchdog diag rid=%s buf=%s state=%s last-progress=%s"
                         (or rid "-") (buffer-name (current-buffer))
                         (or st "-")
-                        (if (numberp lp) (format "%.3f" lp) "-"))))
+                        (if (numberp lp) (format "%.3f" lp) "-")))
         (when-let* ((bt (carriage-transport--short-backtrace 14)))
           (carriage-log "Transport: watchdog backtrace rid=%s\n%s" (or rid "-") bt)))
       ;; Try abort first, then guarantee completion state change.

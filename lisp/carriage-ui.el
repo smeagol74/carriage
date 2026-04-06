@@ -30,6 +30,8 @@
 (require 'carriage-llm-registry)
 (require 'carriage-ui-faces)
 (require 'carriage-ui-spinner)
+(require 'carriage-ui-modeline)
+(require 'carriage-ui-header)
 (require 'carriage-pricing nil t)
 (require 'carriage-perf nil t)
 (require 'carriage-transient-async nil t)

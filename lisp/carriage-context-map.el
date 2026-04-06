@@ -162,7 +162,7 @@
           (setq ok t))
       (error
        (carriage-context--dbg "project-map: %s failed: %s" program (error-message-string err))))
-    (when ok (string-trim out)))
+    (when ok (string-trim out))))
 
 (defun carriage-context--project-map--skip-dir-p (name)
   "Return non-nil when NAME should be skipped in directory walk."

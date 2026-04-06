@@ -26,6 +26,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'carriage-utils)
+(require 'carriage-mode-core)
 (require 'carriage-mode-send)
 (require 'carriage-mode-apply)
 (require 'carriage-git)
