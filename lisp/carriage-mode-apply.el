@@ -186,7 +186,7 @@
                      (lambda (r)
                        (carriage--apply-handle-finished-report r)))))
           (when (not noninteractive)
-            (carriage--report-open-maybe dry)))))
+            (carriage--report-open-maybe dry))))
     (carriage-apply-at-point)))
 
 (provide 'carriage-mode-apply)
