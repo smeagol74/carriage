@@ -31,6 +31,7 @@
 (require 'carriage-errors)
 (require 'carriage-transport-watchdog)
 (require 'carriage-transport-payload)
+(require 'carriage-transport-core nil t)
 ;; Break circular dependency with carriage-mode: call its fns via declare-function.
 (declare-function carriage-register-abort-handler "carriage-mode" (fn))
 (declare-function carriage-clear-abort-handler "carriage-mode" ())
