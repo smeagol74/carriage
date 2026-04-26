@@ -31,7 +31,8 @@
     apps = forAllSystems (pkgs:
       let
         emacs-nox = pkgs.emacs-nox;
-        emacs-with-gptel = pkgs.emacs.pkgs.withPackages (epkgs: with epkgs; [ gptel pkgs.curl ]);
+        # Use emacs-nox for batch build/test to avoid packaging interactive ELPA overlays
+        emacs-with-gptel = pkgs.emacs-nox;
 
         testsDrv = pkgs.writeShellApplication {
           name = "carriage-tests";
@@ -39,7 +40,7 @@
           text = ''
             set -euo pipefail
             exec env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
-              ${emacs-with-gptel}/bin/emacs -Q --batch \
+               ${emacs-with-gptel}/bin/emacs -Q --batch \
               --eval "(setq package-archives '((\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\")))" \
               --eval "(package-initialize)" \
               -L ${./lisp} -l ${./test}/ert-runner.el
@@ -55,7 +56,7 @@
             cp -r ${./lisp} "$tmp/lisp"
             cd "$tmp"
             env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
-              ${emacs-with-gptel}/bin/emacs -Q --batch \
+               ${emacs-with-gptel}/bin/emacs -Q --batch \
               -eval "(setq byte-compile-error-on-warn t)" \
               -L lisp \
               -f batch-byte-compile lisp/*.el
