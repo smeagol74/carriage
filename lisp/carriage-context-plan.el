@@ -66,9 +66,16 @@ Compilation is user-triggered, so this is mostly a micro-optimization."
   "Ensure ROOT is a git repo; user-error otherwise."
   (carriage-context-plan--ensure-local root "root")
   (let* ((res (carriage--call-git root "rev-parse" "--is-inside-work-tree"))
-         (exit (plist-get res :exit)))
+         (exit (plist-get res :exit))
+         (stderr (string-trim (or (plist-get res :stderr) ""))))
     (unless (and (numberp exit) (zerop exit))
-      (user-error "CTXPLAN_E_NOT_GIT: repository not detected at %s" root))
+      ;; Fallback: if .git directory exists treat as repo (some platforms/envs)
+      (let ((gitdir (expand-file-name ".git" root)))
+        (if (file-directory-p gitdir)
+            (progn
+              (carriage-log "CTXPLAN: rev-parse failed but .git present; continuing. stderr=%s" stderr)
+              t)
+          (user-error "CTXPLAN_E_NOT_GIT: repository not detected at %s%s" root (if (string-empty-p stderr) "" (concat ": " stderr))))))
     t))
 
 (defun carriage-context-plan--repo-files (root)

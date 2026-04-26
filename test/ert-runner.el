@@ -9,6 +9,12 @@
        (lisp (expand-file-name "../lisp" here)))
   (add-to-list 'load-path lisp))
 
+;; Guard: determine if GPTel is available in this environment
+(defvar carriage--gptel-available nil
+  "WhetherGPTel is available in this Emacs session.")
+(setq carriage--gptel-available
+      (ignore-errors (require 'gptel nil t) (featurep 'gptel)))
+
 (require 'carriage)
 
 ;; Load all *-test.el in this directory and subdirs (e.g., engines).
@@ -20,10 +26,13 @@
   (dolist (dir dirs)
     (when dir
       (dolist (f (directory-files dir t "^carriage-.*tests?\\.el\\'"))
-        (condition-case _e
-            (load f t t)
-          (error
-           (message "ERT runner: failed to load %s" f)))))))
+        ;; If gptel is not available, skip tests that are known to depend on it
+        (when (or carriage--gptel-available
+                  (not (string-match-p "gptel" (file-name-nondirectory f))))
+          (condition-case _e
+              (load f t t)
+            (error
+             (message "ERT runner: failed to load %s" f))))))))
 
 ;; Fallback inline tests if repo packaging did not include test files.
 (require 'cl-lib)

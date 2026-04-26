@@ -2,7 +2,7 @@
   description = "Carriage-mode - build dev shell and run ERT tests";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
   outputs = { self, nixpkgs }:
@@ -13,7 +13,13 @@
   {
     devShells = forAllSystems (pkgs: {
       default = pkgs.mkShell {
-        packages = with pkgs; [ emacs-nox ripgrep git coreutils ];
+        packages = with pkgs; [
+          emacs-nox
+          ripgrep
+          git
+          coreutils
+          curl
+        ];
         shellHook = ''
           echo "Run tests: emacs -Q --batch -L lisp -l test/ert-runner.el"
           echo "Or via flake app: nix run .#tests"
@@ -24,26 +30,32 @@
 
     apps = forAllSystems (pkgs:
       let
-        emacs = pkgs.emacs-nox;
+        emacs-nox = pkgs.emacs-nox;
+        emacs-with-gptel = pkgs.emacs.pkgs.withPackages (epkgs: with epkgs; [ gptel pkgs.curl ]);
 
         testsDrv = pkgs.writeShellApplication {
           name = "carriage-tests";
-          runtimeInputs = [ pkgs.ripgrep pkgs.git emacs ];
+          runtimeInputs = [ pkgs.ripgrep pkgs.git pkgs.curl ];
           text = ''
             set -euo pipefail
-            exec ${emacs}/bin/emacs -Q --batch -L ${./lisp} -l ${./test}/ert-runner.el
+            exec env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
+              ${emacs-with-gptel}/bin/emacs -Q --batch \
+              --eval "(setq package-archives '((\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\")))" \
+              --eval "(package-initialize)" \
+              -L ${./lisp} -l ${./test}/ert-runner.el
           '';
         };
 
         buildDrv = pkgs.writeShellApplication {
           name = "carriage-build";
-          runtimeInputs = [ pkgs.coreutils emacs ];
+          runtimeInputs = [ pkgs.coreutils pkgs.curl ];
           text = ''
             set -euo pipefail
             tmp="$(mktemp -d)"
             cp -r ${./lisp} "$tmp/lisp"
             cd "$tmp"
-            ${emacs}/bin/emacs -Q --batch \
+            env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
+              ${emacs-with-gptel}/bin/emacs -Q --batch \
               -eval "(setq byte-compile-error-on-warn t)" \
               -L lisp \
               -f batch-byte-compile lisp/*.el
@@ -57,17 +69,23 @@
       });
 
     checks = forAllSystems (pkgs: {
-      ert = pkgs.runCommand "carriage-ert" { buildInputs = [ pkgs.emacs-nox pkgs.ripgrep pkgs.git ]; } ''
-        cp -r ${./lisp} ./lisp
-        cp -r ${./test} ./test
-        ${pkgs.emacs-nox}/bin/emacs -Q --batch -L lisp -l test/ert-runner.el
+        ert = pkgs.runCommand "carriage-ert" { buildInputs = [ pkgs.emacs-nox pkgs.ripgrep pkgs.git pkgs.curl ]; } ''
+          mkdir -p ~/.emacs.d/elpa
+          cp -r ${./lisp} ./lisp
+          cp -r ${./test} ./test
+        env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
+          ${pkgs.emacs-nox}/bin/emacs -Q --batch \
+          --eval "(setq package-archives '((\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\")))" \
+          --eval "(package-initialize)" \
+          -L lisp -l test/ert-runner.el
         touch $out
       '';
 
-      byte-compile = pkgs.runCommand "carriage-byte-compile" { buildInputs = [ pkgs.emacs-nox pkgs.coreutils ]; } ''
+      byte-compile = pkgs.runCommand "carriage-byte-compile" { buildInputs = [ pkgs.emacs-nox pkgs.coreutils pkgs.curl ]; } ''
         cp -r ${./lisp} ./lisp
         # Compile with warnings as errors
-        ${pkgs.emacs-nox}/bin/emacs -Q --batch \
+        env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
+          ${pkgs.emacs-nox}/bin/emacs -Q --batch \
           -eval "(setq byte-compile-error-on-warn t)" \
           -L lisp \
           -f batch-byte-compile lisp/*.el

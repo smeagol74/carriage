@@ -60,12 +60,16 @@
 
 (defun carriage-context--project-map--cache-get (root)
   "Return cached Project Map record for ROOT, or nil."
+  (unless (hash-table-p carriage-context--project-map-cache)
+    (setq carriage-context--project-map-cache (make-hash-table :test 'equal)))
   (when (and (hash-table-p carriage-context--project-map-cache)
              (stringp root) (not (string-empty-p root)))
     (gethash root carriage-context--project-map-cache)))
 
 (defun carriage-context--project-map--cache-put (root rec)
   "Store Project Map REC for ROOT in cache."
+  (unless (hash-table-p carriage-context--project-map-cache)
+    (setq carriage-context--project-map-cache (make-hash-table :test 'equal)))
   (when (and (hash-table-p carriage-context--project-map-cache)
              (stringp root) (not (string-empty-p root))
              (listp rec))
@@ -82,6 +86,8 @@
 
 (defun carriage-context-project-map-invalidate (&optional root)
   "Invalidate Project Map cache for ROOT (or all roots when nil)."
+  (unless (hash-table-p carriage-context--project-map-cache)
+    (setq carriage-context--project-map-cache (make-hash-table :test 'equal)))
   (if (null root)
       (when (hash-table-p carriage-context--project-map-cache)
         (clrhash carriage-context--project-map-cache))

@@ -15,23 +15,25 @@
 
 (declare-function carriage-project-root "carriage-utils" ())
 
-(defvar-local carriage-context--root-tru-cache nil
+(defvar-local carriage-context--root-tru-cache (make-hash-table :test 'equal)
   "Memo table: root directory → truename.")
 
-(defvar-local carriage-context--normalize-cache nil
+(defvar-local carriage-context--normalize-cache (make-hash-table :test 'equal)
   "Memo table: (root . path) → (ok . (rel . truename)).")
 
-(defvar-local carriage-context--file-cache nil
+(defvar-local carriage-context--file-cache (make-hash-table :test 'equal)
   "Cache table: truename → (plist :mtime :size :time :ok :data).")
 
 (defun carriage-context--inside-root-p (truename root)
   "Return non-nil if TRUENAME lies within ROOT.
 Assumes TRUENAME is already a truename; avoids re-normalizing it.
 Uses a small memo to avoid repeated (file-truename root) calls."
+  (unless (hash-table-p carriage-context--root-tru-cache)
+    (setq carriage-context--root-tru-cache (make-hash-table :test 'equal)))
   (let* ((rt (or (gethash root carriage-context--root-tru-cache)
-                 (let ((v (file-name-as-directory (file-truename root))))
-                   (puthash root v carriage-context--root-tru-cache)
-                   v)))
+                  (let ((v (file-name-as-directory (file-truename root))))
+                    (puthash root v carriage-context--root-tru-cache)
+                    v)))
          (pt (file-name-as-directory truename)))
     (string-prefix-p rt pt)))
 
@@ -40,6 +42,8 @@ Uses a small memo to avoid repeated (file-truename root) calls."
 Paths outside ROOT are allowed (for context collection only); REL is the absolute truename.
 Apply pipeline still enforces project-root boundaries (see `carriage-normalize-path' and spec/security-v2.org).
 Return cons (ok . (rel . truename)) or (nil . reason-symbol). Uses memoization."
+  (unless (hash-table-p carriage-context--normalize-cache)
+    (setq carriage-context--normalize-cache (make-hash-table :test 'equal)))
   (let* ((key (cons root path))
          (hit (and carriage-context--normalize-cache
                    (gethash key carriage-context--normalize-cache))))
@@ -69,6 +73,8 @@ Return cons (ok . (rel . truename)) or (nil . reason-symbol). Uses memoization."
 (defun carriage-context--read-file-safe (truename)
   "Read file contents from TRUENAME; return (ok . string-or-reason).
 Uses a small cache with TTL and invalidation by file size/mtime."
+  (unless (hash-table-p carriage-context--file-cache)
+    (setq carriage-context--file-cache (make-hash-table :test 'equal)))
   (let* ((attrs (ignore-errors (file-attributes truename)))
          (mtime (and attrs (nth 5 attrs)))
          (size  (and attrs (nth 7 attrs)))

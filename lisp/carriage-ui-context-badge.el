@@ -8,6 +8,12 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'subr-x)
+
+(declare-function carriage-context-count "carriage-context" (&optional buffer point))
+
+
 (defcustom carriage-ui-context-cache-ttl nil
   "Maximum age in seconds for cached context badge computations in the mode-line."
   :type '(choice (const :tag "Disable caching" 0)
@@ -91,12 +97,67 @@ Note: Avoids requiring carriage-context in the redisplay path; relies on boundp 
    :gptver (if (boundp 'carriage-ui--gptel-context-version)
                carriage-ui--gptel-context-version
              0)
-   :scope (and (boundp 'carriage-doc-context-scope)
-               carriage-doc-context-scope)))
+    :scope (and (boundp 'carriage-doc-context-scope)
+                carriage-doc-context-scope)))
+
+(defun carriage-ui--ctx-cache-valid-p (cache toggles tick time _ignored)
+  "Return non-nil when CACHE is fresh for TOGGLES/TICK at TIME.
+
+This is intentionally conservative: anything missing or malformed is treated as stale."
+  (and (listp cache)
+       (equal (plist-get cache :toggles) toggles)
+       (equal (plist-get cache :tick) tick)
+       (equal (plist-get cache :time) time)
+       (let ((val (plist-get cache :value)))
+         (or (consp val) (stringp val) (null val)))))
 
 (defun carriage-ui--ctx-build-cache (toggles tick time value)
   "Build context cache plist from TOGGLES, TICK, TIME and VALUE."
   (list :toggles toggles :tick tick :time time :value value))
+
+(defun carriage-ui--ctx-invalidate ()
+  "Invalidate all context badge caches for the current buffer."
+  (setq carriage-ui--ctx-cache nil
+        carriage-ui--ctx-pending-toggles nil
+        carriage-ui--ctx-pending-tick nil
+        carriage-ui--ctx-placeholder-count 0
+        carriage-ui--ctx-last-placeholder-time 0
+        carriage-ui--ctx-refresh-timer nil
+        carriage-ui--ctx-badge-refresh-timer nil
+        carriage-ui--ctx-badge-pending nil)
+  (force-mode-line-update t))
+
+(defun carriage-ui--reset-context-cache ()
+  "Compatibility alias for cache invalidation."
+  (carriage-ui--ctx-invalidate))
+
+(defun carriage-ui--compute-context-badge (inc-doc inc-gpt inc-vis inc-patched)
+  "Return a cons (LABEL . TOOLTIP) for the context badge.
+
+The badge is based on `carriage-context-count' when available and falls back
+to a compact label if context counting fails."
+  (let* ((res (condition-case _e
+                  (if (fboundp 'carriage-context-count)
+                      (carriage-context-count (current-buffer) nil)
+                    nil)
+                (error nil)))
+         (count (or (plist-get res :count) 0))
+         (items (or (plist-get res :items) '()))
+         (profile (or (and (boundp 'carriage-doc-context-profile)
+                           carriage-doc-context-profile)
+                      'p1))
+         (tooltip (concat
+                   (format "Context: %d item(s)\n" count)
+                   (format "Профиль: %s\n" (upcase (symbol-name profile)))
+                   (format "Doc: %s  GPTel: %s  Visible: %s  Patched: %s"
+                           (if inc-doc "on" "off")
+                           (if inc-gpt "on" "off")
+                           (if inc-vis "on" "off")
+                           (if inc-patched "on" "off"))
+                   (when items
+                     (concat "\n"
+                             (mapconcat #'carriage-ui--context-item->line items "\n"))))))
+    (cons (format "[Ctx:%d]" count) tooltip)))
 
 (defun carriage-ui-refresh-context-badge (&optional _event)
   "Refresh the context badge now."
