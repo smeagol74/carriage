@@ -30,8 +30,9 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'carriage-transport-gptel-watchdog)
-(require 'gptel)
+ (require 'carriage-transport-gptel-watchdog)
+ ;; gptel is optional in batch/test environments; load only if available
+ (require 'gptel nil t)
 (require 'cl-lib)
 (require 'subr-x)
 (require 'carriage-logging)
