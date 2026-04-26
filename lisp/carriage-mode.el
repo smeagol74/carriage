@@ -42,7 +42,8 @@
 (require 'carriage-doc-state-perf nil t)
 (require 'carriage-reasoning-fold nil t)
 (require 'carriage-typedblocks nil t)
-(require 'carriage-mode-context)
+;; Context helpers are optional at load time; load if available.
+(require 'carriage-mode-context nil t)
 
 ;; Autoload stub ensures calling carriage-global-mode works even if file isn't loaded yet.
 (require 'carriage-global-mode)
