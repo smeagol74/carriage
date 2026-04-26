@@ -1,0 +1,21 @@
+name: Nix CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  nix-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@v17
+        with:
+          nix_path: "nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixos-25.11.tar.gz"
+      - name: Run nix build (byte-compile strict)
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' run .#build
+      - name: Run tests (flake app)
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' run .#tests
