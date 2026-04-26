@@ -54,11 +54,13 @@
             set -euo pipefail
             tmp="$(mktemp -d)"
             cp -r ${./lisp} "$tmp/lisp"
+            cp -r ${./scripts} "$tmp/scripts" || true
             cd "$tmp"
             env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
                ${emacs-with-gptel}/bin/emacs -Q --batch \
                -L lisp \
-               -f batch-byte-compile lisp/*.el
+               -l scripts/compile-strict.el \
+               -f carriage-byte-compile-strict
             echo "Byte-compiled files are in: $tmp/lisp (temporary dir)"
           '';
         };
