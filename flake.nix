@@ -54,6 +54,8 @@
             set -euo pipefail
             tmp="$(mktemp -d)"
             cp -r ${./lisp} "$tmp/lisp"
+            # Ensure the temporary tree is writable inside the derivation
+            chmod -R u+w "$tmp" || true
             cp -r ${./scripts} "$tmp/scripts" || true
             cd "$tmp"
             env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
