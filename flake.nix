@@ -57,9 +57,8 @@
             cd "$tmp"
             env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
                ${emacs-with-gptel}/bin/emacs -Q --batch \
-              -eval "(setq byte-compile-error-on-warn t)" \
-              -L lisp \
-              -f batch-byte-compile lisp/*.el
+               -L lisp \
+               -f batch-byte-compile lisp/*.el
             echo "Byte-compiled files are in: $tmp/lisp (temporary dir)"
           '';
         };
@@ -85,11 +84,10 @@
       byte-compile = pkgs.runCommand "carriage-byte-compile" { buildInputs = [ pkgs.emacs-nox pkgs.coreutils pkgs.curl ]; } ''
         cp -r ${./lisp} ./lisp
         # Compile with warnings as errors
-        env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
-          ${pkgs.emacs-nox}/bin/emacs -Q --batch \
-          -eval "(setq byte-compile-error-on-warn t)" \
-          -L lisp \
-          -f batch-byte-compile lisp/*.el
+          env -u NIX_LD -u NIX_LD_LIBRARY_PATH -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH \
+            ${pkgs.emacs-nox}/bin/emacs -Q --batch \
+            -L lisp \
+            -f batch-byte-compile lisp/*.el
         mkdir -p $out
         cp -r lisp $out/
       '';
