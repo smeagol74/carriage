@@ -60,3 +60,29 @@ Pressure: Bug | Feature | Debt | Ops
 Surface impact: (none) | touches: <Surface item(s)> [FROZEN/FLUID]
 Proof: tests: <paths/commands that validate the intent>
 ```
+
+## Agent Execution Guidelines
+
+Agents and automation run operations inside a git worktree and must always announce the execution context before performing operations and after each iteration. To make this explicit and reproducible, we provide a small wrapper script: `scripts/agent-run.sh`.
+
+Usage:
+
+```
+./scripts/agent-run.sh <command> [args...]
+```
+
+What it prints before the operation:
+- repo-root: absolute path of the repository top-level (or '(not a git repo)')
+- git-dir: path to .git directory
+- branch: current branch name (or 'unknown/detached')
+- cwd: current working directory
+- rel-path-from-repo-root: relative path from repo root to cwd
+- git-worktrees-present: list of worktrees (porcelain output when available)
+
+What it prints after the operation:
+- started: ISO timestamp
+- exit-code: numeric exit status
+- finished: ISO timestamp
+- iteration-complete: marker that the agent completed its run
+
+Agents must use this wrapper when performing file system or git operations in CI, development automation, or editorial agents so logs always include clear, machine-parseable context about which branch and worktree were used.
